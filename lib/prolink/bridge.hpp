@@ -1,0 +1,132 @@
+#pragma once
+
+#include "clock.hpp"
+#include "packets.hpp"
+#include "types.hpp"
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+
+namespace prolink {
+
+class IUdpSocket {
+public:
+    // Blocking recv with timeout in milliseconds. Returns bytes read, 0 on
+    // timeout, or -1 on socket error.
+    virtual int recv(uint8_t* buf, size_t len, uint32_t timeout_ms) = 0;
+
+    // Send `buf` to (ip, port). Returns true on success. ip is the IPv4
+    // address as a host-order uint32_t (e.g. 192.168.1.1 == 0xC0A80101 on
+    // any host). Pass 0xFFFFFFFF to broadcast.
+    virtual bool send(const uint8_t* buf, size_t len,
+                      uint32_t ip, uint16_t port) = 0;
+    virtual ~IUdpSocket() = default;
+};
+
+struct BridgeConfig {
+    uint8_t  device_num         = 5;            // virtual CDJ # — matches python-prodj-link's working default
+    char     device_name[21]    = "xdj-bridge";
+    uint8_t  mac[6]             = {0};
+    uint32_t local_ip        = 0;            // own IP, network byte order
+    uint32_t broadcast_ip    = 0xFFFFFFFFu;  // network broadcast (e.g. 169.254.255.255)
+    bool     send_vcdj_announce = true;
+    bool     verbose            = false;
+    uint32_t silence_timeout_ms = 2000;
+    uint32_t keepalive_period_ms = 1500;
+    uint32_t play_debounce_ms   = 100;
+    float    fallback_bpm       = 120.0f;
+};
+
+// Optional hooks — useful for visualizers, logging, tests.
+struct BridgeCallbacks {
+    std::function<void(const BeatPacket&)>   on_beat;
+    std::function<void(const StatusPacket&)> on_status;
+    std::function<void(const char*)>         on_log;
+};
+
+// Orchestrates the dual-source clock pipeline. Owns master tracking,
+// play-state debouncing, hold-Start-until-downbeat, keep-alive emission,
+// and silence detection. Pure logic — all I/O is injected.
+class Bridge {
+public:
+    Bridge(IUdpSocket& beat_sock,
+           IUdpSocket& status_sock,
+           IUdpSocket& keepalive_sock,
+           IClockSink& clock,
+           BridgeConfig cfg,
+           BridgeCallbacks cb = {});
+
+    // Blocking — spawns listener threads internally on platforms that need it;
+    // returns when stop() is called.
+    void run();
+
+    // Asynchronously requests the run loop to exit.
+    void stop();
+
+    // Two-axis lead-time compensation. The scheduler sees only the sum.
+    //
+    //   clock_offset_ms — physical chain latency (USB → slave). Per output
+    //     port; the desktop wrapper persists it to ~/.config/dj-midi-sender.json.
+    //   grid_offset_ms  — per-track beat-grid skew (rekordbox's analyzed grid
+    //     vs where the kick actually sits). Session-only.
+    void  set_clock_offset_ms(float ms);
+    void  set_grid_offset_ms(float ms);
+    void  adjust_clock_offset_ms(float delta_ms);
+    void  adjust_grid_offset_ms(float delta_ms);
+    void  reset_grid_offset();
+    float clock_offset_ms() const { return clock_offset_ms_.load(); }
+    float grid_offset_ms()  const { return grid_offset_ms_.load(); }
+    float total_offset_ms() const { return clock_offset_ms_.load() + grid_offset_ms_.load(); }
+
+    // Per-packet counts since startup.
+    uint64_t beat_packet_count()   const { return beat_count_.load(); }
+    uint64_t status_packet_count() const { return status_count_.load(); }
+
+    // Diagnostics.
+    bool     is_playing()         const { return playing_.load(); }
+    uint8_t  current_master_num() const { return current_master_.load(); }
+    float    last_known_bpm()     const { return last_known_bpm_.load(); }
+
+private:
+    void handle_beat_packet(const uint8_t* buf, size_t len);
+    void handle_status_packet(const uint8_t* buf, size_t len);
+    void maybe_send_keepalive(uint64_t now_ms);
+    void maybe_stop_on_silence(uint64_t now_ms);
+    void log(const char* msg) const;
+
+    IUdpSocket& beat_sock_;
+    IUdpSocket& status_sock_;
+    IUdpSocket& keepalive_sock_;
+    IClockSink& clock_;
+    BridgeConfig cfg_;
+    BridgeCallbacks cb_;
+
+    std::atomic<bool>     running_{false};
+    std::atomic<bool>     playing_{false};
+    std::atomic<uint8_t>  current_master_{0};
+    std::atomic<float>    last_known_bpm_{120.0f};
+    std::atomic<float>    clock_offset_ms_{0.0f};
+    std::atomic<float>    grid_offset_ms_{0.0f};
+    std::atomic<uint64_t> beat_count_{0};
+    std::atomic<uint64_t> status_count_{0};
+
+    void push_offset_to_clock_();
+
+    // Held entirely on the main thread; no concurrent access.
+    bool     waiting_for_downbeat_ = false;
+    bool     last_master_playing_  = false;
+    uint64_t pending_play_change_ms_ = 0;
+    bool     pending_play_state_ = false;
+    uint64_t last_packet_ms_ = 0;
+    uint64_t last_keepalive_ms_ = 0;
+
+    // Bar-alignment tracking. If a beat packet is dropped, the master's
+    // beat_in_bar advances out of step with our internal expectation; we
+    // catch that and force a Stop+Start on the next downbeat to re-align
+    // the slave's bar 1 with the master's.
+    uint8_t  expected_beat_in_bar_ = 0;   // 0 = "not yet observed"
+    bool     bar_slip_pending_realign_ = false;
+};
+
+}  // namespace prolink

@@ -1,0 +1,55 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Object / dependency files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.d
+*.dSYM/
+
+# PlatformIO (firmware phase)
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/extensions.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local config / secrets
+.env
+.env.local
+config.local.*
+
+# Captures from live debugging (keep the canonical ones in captures/)
+*.pcap
+*.pcapng
+!captures/*.pcapng

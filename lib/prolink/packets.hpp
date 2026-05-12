@@ -1,0 +1,84 @@
+#pragma once
+
+#include "types.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+
+namespace prolink {
+
+// Beat packet (type 0x28, port 50001). Field offsets verified against
+// captures/xdj-xz-export-mode*.pcapng — see docs/architecture.md.
+struct BeatPacket {
+    uint8_t  device_num     = 0;
+    char     device_name[21] = {0};   // 20 bytes + null terminator
+    uint32_t ms_next_beat   = 0;
+    uint32_t ms_next_bar    = 0;
+    uint32_t pitch_raw      = 0;
+    uint16_t track_bpm_x100 = 0;
+    uint8_t  beat_in_bar    = 0;   // 1..4
+
+    float pitch_multiplier() const {
+        return static_cast<float>(pitch_raw) / static_cast<float>(PITCH_UNITY);
+    }
+    float pitch_percent() const {
+        return (pitch_multiplier() - 1.0f) * 100.0f;
+    }
+    float track_bpm() const {
+        return track_bpm_x100 / 100.0f;
+    }
+    float effective_bpm() const {
+        return track_bpm() * pitch_multiplier();
+    }
+};
+
+// Status packet (type 0x0A, port 50002). Only sent after we announce a
+// virtual CDJ on port 50000. Field offsets per deep-symmetry +
+// prolink-cpp + python-prodj-link.
+struct StatusPacket {
+    uint8_t  device_num     = 0;
+    char     device_name[21] = {0};
+    uint32_t pitch1_raw     = 0;   // effective pitch — USE THIS
+    uint32_t pitch2_raw     = 0;   // local fader only — IGNORE
+    uint16_t track_bpm_x100 = 0;
+    uint8_t  flags          = 0;
+    uint16_t mv             = 0;
+    uint8_t  beat_in_bar    = 0;
+
+    bool is_playing() const { return (flags >> 6) & 1; }
+    bool is_master()  const { return (flags >> 5) & 1; }
+    bool is_synced()  const { return (flags >> 4) & 1; }
+    bool is_on_air()  const { return (flags >> 3) & 1; }
+    bool bpm_valid()  const { return mv == MV_REKORDBOX; }
+
+    float pitch_multiplier() const {
+        return static_cast<float>(pitch1_raw) / static_cast<float>(PITCH_UNITY);
+    }
+    float pitch_percent() const {
+        return (pitch_multiplier() - 1.0f) * 100.0f;
+    }
+    float track_bpm() const {
+        return track_bpm_x100 / 100.0f;
+    }
+    float effective_bpm() const {
+        return track_bpm() * pitch_multiplier();
+    }
+};
+
+// Returns nullopt if the buffer is not a well-formed packet of the given type.
+std::optional<BeatPacket>   parse_beat_packet(const uint8_t* buf, size_t len);
+std::optional<StatusPacket> parse_status_packet(const uint8_t* buf, size_t len);
+
+// Build a virtual-CDJ keep-alive packet (Pro DJ Link type 0x06, 54 bytes).
+// `ip_host_order` is host-byte-order uint32 (e.g. 0xC0A80101 for 192.168.1.1).
+// Layout matches python-prodj-link / dysentery. `device_num` 5 works with
+// XDJ-XZ; CDJ-3000 reserves 1–4 for decks and 5–6 for mixers, but a single-XZ
+// network has 5 free.
+size_t build_keepalive_packet(uint8_t* out, size_t out_len,
+                              const char* device_name,
+                              uint8_t device_num,
+                              const uint8_t mac[6],
+                              uint32_t ip_host_order);
+
+}  // namespace prolink
