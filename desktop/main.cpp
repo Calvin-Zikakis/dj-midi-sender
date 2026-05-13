@@ -38,6 +38,8 @@ struct Args {
     float       fallback_bpm   = 120.0f;
     std::optional<float> clock_offset_ms;   // unset = load from config
     float       grid_offset_ms = 0.0f;
+    uint8_t     follow_device  = 0;         // 0 = auto, 1..6 = pin to this deck
+    float       bpm_smooth     = 0.3f;      // EMA alpha for tempo updates
     bool        no_vcdj        = false;
     bool        list_midi      = false;
     bool        verbose        = false;
@@ -59,6 +61,10 @@ void print_usage() {
         "                         In --visualize mode, tune live with [ ] and Shift+[ ].\n"
         "  --grid-offset-ms <f>   Per-track beat-grid offset in ms (session only, not persisted).\n"
         "                         In --visualize mode, tune live with ←/→ and ↑/↓.\n"
+        "  --follow-device <n>    Pin master tracking to a specific CDJ deck (1..6).\n"
+        "                         Default: auto — follow whichever deck has is_master set.\n"
+        "  --bpm-smooth <f>       EMA smoothing alpha for tempo updates (0 < a <= 1).\n"
+        "                         1.0 = no smoothing; lower = more smoothing. Default: 0.3.\n"
         "  --no-vcdj              Skip the virtual-CDJ announce (beat packets only)\n"
         "  --list-midi            List MIDI output ports and exit\n"
         "  --visualize            Open the ImGui debug panel\n"
@@ -86,6 +92,8 @@ bool parse_args(int argc, char** argv, Args& a) {
         else if (opt == "--bpm")              a.fallback_bpm    = std::atof(next().c_str());
         else if (opt == "--clock-offset-ms")  a.clock_offset_ms = std::atof(next().c_str());
         else if (opt == "--grid-offset-ms")   a.grid_offset_ms  = std::atof(next().c_str());
+        else if (opt == "--follow-device")    a.follow_device   = static_cast<uint8_t>(std::atoi(next().c_str()));
+        else if (opt == "--bpm-smooth")       a.bpm_smooth      = std::atof(next().c_str());
         else if (opt == "--no-vcdj")          a.no_vcdj         = true;
         else if (opt == "--list-midi")        a.list_midi       = true;
         else if (opt == "--visualize")        a.visualize       = true;
@@ -140,6 +148,8 @@ int main(int argc, char** argv) {
     cfg.send_vcdj_announce = !args.no_vcdj;
     cfg.verbose            = args.verbose;
     cfg.fallback_bpm       = args.fallback_bpm;
+    cfg.force_master_device = args.follow_device;
+    cfg.bpm_smoothing_alpha = args.bpm_smooth;
 
     // Keepalive socket must be bound to the interface IP (not 0.0.0.0) so
     // macOS routes broadcast sends to the correct interface consistently.

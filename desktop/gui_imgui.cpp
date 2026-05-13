@@ -318,14 +318,21 @@ void GuiVisualizer::render_frame() {
         ImGui::Dummy(ImVec2(0, 6));
     }
 
-    ImGui::Text("Rate:          %6.2f ticks/sec   (%.2f BPM)",
+    // Target BPM is derived from the period the timer is *currently aiming
+    // for* — this is the clean number, free of measurement noise. Measured
+    // ticks/sec is shown as a sanity check; its ±2.5 BPM wobble comes from
+    // sampling 26 discrete ticks per 0.5s window, not from real instability.
+    uint32_t period_us = clock_.current_tick_period_us();
+    float target_bpm = (period_us > 0)
+        ? (60'000'000.0f / static_cast<float>(period_us) / 24.0f)
+        : 0.0f;
+    ImGui::Text("Target BPM:    %6.2f   (period %u µs)", target_bpm, period_us);
+    ImGui::Text("Measured:      %6.2f ticks/sec   (%.2f BPM, 0.5 s window)",
                 tick_rate_hz_, tick_rate_hz_ * 60.0f / 24.0f);
     ImGui::Text("Tick in beat:  %u / 24",
                 static_cast<unsigned>(clock_.current_tick_in_beat()));
     ImGui::Text("Phase error:   %+7.2f ms",
                 clock_.current_phase_error_us() / 1000.0f);
-    ImGui::Text("Tick period:   %u µs",
-                clock_.current_tick_period_us());
 
     // ---- Offsets ----
     ImGui::Spacing();

@@ -36,6 +36,27 @@ struct BridgeConfig {
     uint32_t keepalive_period_ms = 1500;
     uint32_t play_debounce_ms   = 100;
     float    fallback_bpm       = 120.0f;
+
+    // If non-zero (1..6), pin master tracking to this device number and
+    // ignore the is_master flag. Useful when you want the drum machine to
+    // follow a specific deck regardless of who has the master button lit.
+    // 0 = auto (track whichever device has is_master, bootstrap from first
+    // packet otherwise).
+    uint8_t  force_master_device = 0;
+
+    // EMA smoothing coefficient applied to incoming BPM values before
+    // pushing to the clock. 0 < alpha <= 1, where 1 = no smoothing (each
+    // update applied directly), smaller = heavier smoothing. 0.3 means
+    // ~6 status packets (~1.2 s) to reach 90% of a step change — smooth
+    // enough to damp sample noise without lagging slider movements.
+    float    bpm_smoothing_alpha = 0.3f;
+
+    // Hysteresis window for falling back from status-driven tempo to
+    // beat-packet-driven tempo. With status packets arriving at ~5 Hz,
+    // 500 ms means roughly two consecutive misses before the bridge
+    // accepts a beat-packet tempo update. Status packets are the lower-
+    // jitter source — we only want one driver at a time.
+    uint32_t status_silence_fallback_ms = 500;
 };
 
 // Optional hooks — useful for visualizers, logging, tests.
@@ -112,6 +133,7 @@ private:
     std::atomic<uint64_t> status_count_{0};
 
     void push_offset_to_clock_();
+    void apply_tempo_(float bpm);
 
     // Held entirely on the main thread; no concurrent access.
     bool     waiting_for_downbeat_ = false;
@@ -119,7 +141,9 @@ private:
     uint64_t pending_play_change_ms_ = 0;
     bool     pending_play_state_ = false;
     uint64_t last_packet_ms_ = 0;
+    uint64_t last_status_ms_ = 0;       // last successfully parsed status packet
     uint64_t last_keepalive_ms_ = 0;
+    float    smoothed_bpm_ = 0.0f;      // EMA-filtered tempo (0 = bootstrap)
 
     // Bar-alignment tracking. If a beat packet is dropped, the master's
     // beat_in_bar advances out of step with our internal expectation; we
