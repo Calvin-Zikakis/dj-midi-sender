@@ -96,8 +96,6 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     last_packet_ms_ = now_ms();
     beat_count_.fetch_add(1, std::memory_order_relaxed);
 
-    if (cb_.on_beat) cb_.on_beat(*parsed);
-
     // Initial master claim: with only one device on the link, the first beat
     // we see *is* the master. Status packets will overwrite this once they
     // start flowing.
@@ -113,6 +111,10 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     }
 
     if (parsed->device_num != current_master_.load()) return;
+
+    // Master-filtered. Fire callback so the GUI only sees the active deck —
+    // not e.g. deck 2's idle status from a combined unit like the XDJ-XZ.
+    if (cb_.on_beat) cb_.on_beat(*parsed);
 
     // Always update tempo from beat packets — effective_bpm() encodes the
     // pitch slider, so this tracks tempo changes even when status packets
@@ -190,8 +192,6 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     last_packet_ms_ = now_ms();
     status_count_.fetch_add(1, std::memory_order_relaxed);
 
-    if (cb_.on_status) cb_.on_status(*parsed);
-
     // Master tracking: whoever currently has master+playing flags wins.
     if (parsed->is_master() && parsed->is_playing()) {
         if (current_master_.load() != parsed->device_num) {
@@ -207,6 +207,12 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     }
 
     if (parsed->device_num != current_master_.load()) return;
+
+    // Master-filtered. Fire callback so the GUI only sees the active deck.
+    // The XDJ-XZ broadcasts status for both internal decks; without this
+    // filter the GUI alternates between deck 1's real numbers and deck 2's
+    // idle/loading state (causing BPM to oscillate, Mv-valid to flicker).
+    if (cb_.on_status) cb_.on_status(*parsed);
 
     // Tempo update — only when the BPM is trustworthy.
     if (parsed->bpm_valid() && parsed->effective_bpm() > 0.0f) {
