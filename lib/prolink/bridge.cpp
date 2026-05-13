@@ -192,17 +192,27 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     last_packet_ms_ = now_ms();
     status_count_.fetch_add(1, std::memory_order_relaxed);
 
-    // Master tracking: whoever currently has master+playing flags wins.
-    if (parsed->is_master() && parsed->is_playing()) {
-        if (current_master_.load() != parsed->device_num) {
-            current_master_.store(parsed->device_num);
-            if (cfg_.verbose) {
-                char msg[128];
-                std::snprintf(msg, sizeof(msg),
-                              "master is now device %u (%s)",
-                              parsed->device_num, parsed->device_name);
-                log(msg);
-            }
+    // Master tracking. Two cases:
+    //   (1) Steady state — follow whoever has the is_master flag set. We do
+    //       NOT also require is_playing, because the master flag is the
+    //       Pioneer protocol's "this is the tempo authority" designation and
+    //       transfers between decks independent of play state. A paused
+    //       master is still the deck we should track.
+    //   (2) Bootstrap — if no device has been identified as master yet (we
+    //       just started up, or no deck has claimed the flag), latch onto
+    //       the first status-sending device. A real master claim will
+    //       supersede this on the next packet that has is_master set.
+    bool claim_master = parsed->is_master() ||
+                        current_master_.load() == 0;
+    if (claim_master && current_master_.load() != parsed->device_num) {
+        current_master_.store(parsed->device_num);
+        if (cfg_.verbose) {
+            char msg[128];
+            std::snprintf(msg, sizeof(msg),
+                          "master is now device %u (%s)%s",
+                          parsed->device_num, parsed->device_name,
+                          parsed->is_master() ? "" : " (bootstrap)");
+            log(msg);
         }
     }
 
