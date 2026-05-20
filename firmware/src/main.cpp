@@ -28,7 +28,7 @@
 #include "packets.hpp"
 #include "types.hpp"
 
-#include "midi_uart.hpp"
+#include "midi_host_usb.hpp"
 #include "timer_esp.hpp"
 #include "udp_w5500.hpp"
 
@@ -156,7 +156,13 @@ Adafruit_NeoPixel g_pixel(1, BOARD_RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 // mirrors what desktop/main.cpp builds, and calls Bridge::run(). The run
 // loop polls both UDP sockets with 5 ms timeouts, so this task is
 // always-on but not pinned at 100% CPU.
-firmware::MidiUartStub g_midi;
+//
+// MidiHostUsb installs ESP-IDF's USB host driver in setup() and acts as a
+// USB MIDI host. The OP-XY (or any class-compliant USB MIDI device) plugs
+// into the USB-C jack as a peripheral. Note: this takes over the USB-OTG
+// peripheral and kills the USB-Serial-JTAG console; logs go nowhere until
+// a UART breakout is wired to GPIO43/44.
+firmware::MidiHostUsb g_midi;
 
 void bridge_task(void*) {
     // Don't start the Bridge until link is up — the keepalive sender
@@ -278,7 +284,7 @@ void bridge_task(void*) {
 
 void setup() {
     delay(500);
-    printf("\n[xdj-bridge] firmware — full Bridge integration\n");
+    printf("\n[xdj-bridge] firmware — full Bridge integration + USB MIDI host\n");
 
     // Initialize the onboard WS2812B and flash a brief identity color so
     // we can tell at a glance that setup() ran (independent of network
@@ -288,6 +294,18 @@ void setup() {
     g_pixel.show();
 
     init_ethernet();
+
+    // Install the USB host driver and spawn the host/client/sender tasks.
+    // This takes over the USB-OTG peripheral and silences the USB-Serial-
+    // JTAG console — anything printed after this line goes nowhere unless
+    // a USB-UART breakout is wired to U0TXD/U0RXD on header H1.
+    if (!g_midi.begin()) {
+        // Failure here means MIDI clocks won't go anywhere over USB. The
+        // rest of the bridge still works (counters, LED, status logging
+        // before the console died); we just don't clock anything.
+        g_pixel.setPixelColor(0, g_pixel.Color(80, 0, 80));  // magenta = host install failed
+        g_pixel.show();
+    }
 
     // Bridge task on Core 1 alongside the Arduino loop. 8 KB stack is
     // generous — keepalive packet build, parsers, and EMA math all live
@@ -300,11 +318,14 @@ void loop() {
     const uint32_t now = millis();
     if (now - last >= 5000) {
         last = now;
-        printf("[status] link=%s midi_clocks=%llu midi_starts=%llu midi_stops=%llu\n",
+        printf("[status] link=%s usb_dev=%s clocks=%llu starts=%llu stops=%llu sent=%llu dropped=%llu\n",
                g_link_up ? "up" : "down",
+               g_midi.is_device_connected() ? "attached" : "none",
                g_midi.clock_ticks_sent(),
                g_midi.start_messages(),
-               g_midi.stop_messages());
+               g_midi.stop_messages(),
+               g_midi.bytes_sent(),
+               g_midi.bytes_dropped());
     }
     delay(100);
 }
