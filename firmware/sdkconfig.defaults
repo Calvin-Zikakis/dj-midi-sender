@@ -1,0 +1,31 @@
+# ESP-IDF sdkconfig overrides for the Arduino-as-component build.
+# These are merged on top of the ESP-IDF default config by PlatformIO
+# (board.json's defaults) before any per-environment build.
+
+# Required by arduino-esp32 — the framework's CMakeLists explicitly
+# checks for FreeRTOS at 1 kHz tick and fails the build otherwise.
+CONFIG_FREERTOS_HZ=1000
+
+# Run Arduino's setup()/loop() from app_main automatically. Without
+# this, we'd have to write our own app_main and call initArduino().
+CONFIG_AUTOSTART_ARDUINO=y
+
+# Match the board (ESP32-S3R8: 16 MB QSPI flash). Without this the IDF
+# default (2 MB) trips PlatformIO's "flash size mismatch" check.
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Use IDF's built-in "single app, large" partition table — gives the
+# firmware a ~3 MB app partition (we'll use a tiny fraction of that)
+# without needing a custom CSV in the repo.
+CONFIG_PARTITION_TABLE_SINGLE_APP=n
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Ethernet drivers. We don't use the ESP32's internal EMAC (no RMII
+# wired on this board); the W5500 SPI driver is what we need.
+CONFIG_ETH_USE_INTERNAL_ETHERNET=n
+CONFIG_ETH_USE_SPI_ETHERNET=y
+CONFIG_ETH_SPI_ETHERNET_W5500=y
+CONFIG_ETH_SPI_ETHERNET_DM9051=n
+CONFIG_ETH_SPI_ETHERNET_KSZ8851SNL=n
