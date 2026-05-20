@@ -1,0 +1,12 @@
+{
+    "name": "prolink",
+    "version": "0.1.0",
+    "description": "Pro DJ Link packet parser, master tracking, dual-source PLL, and 24 PPQN MIDI clock orchestrator. Pure C++17 — no platform headers beyond <cstdint>, <cstring>, <functional>, <optional>, <atomic>. Same code drives desktop bridge and ESP32-S3 firmware.",
+    "frameworks": "*",
+    "platforms": "*",
+    "build": {
+        "flags": ["-std=gnu++17"],
+        "unflags": ["-std=gnu++11"],
+        "srcFilter": ["+<*.cpp>"]
+    }
+}
