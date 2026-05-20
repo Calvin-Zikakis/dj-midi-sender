@@ -11,6 +11,7 @@
 // Bridge and calls run() — the blocking poll loop inside lib/prolink/.
 
 #include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
 #include <cstdio>
 #include <cstring>
 
@@ -143,6 +144,13 @@ void init_ethernet() {
     printf("[eth] static IP %s/16, broadcast 169.254.255.255\n", kLocalIpStr);
 }
 
+// ── Onboard WS2812B status LED (GPIO4 per schematic) ───────────────────
+// One pixel, GRB ordering, 800 kHz protocol. Acts as a downbeat indicator:
+// red on beat 1 of every bar, dim white on beats 2–4. With the USB console
+// going away once we switch to host mode, this is our only at-a-glance
+// "the box is locked to a master and clocking" signal.
+Adafruit_NeoPixel g_pixel(1, BOARD_RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
+
 // ── Bridge task ────────────────────────────────────────────────────────
 // Holds the I/O implementations and the Clock, builds a BridgeConfig that
 // mirrors what desktop/main.cpp builds, and calls Bridge::run(). The run
@@ -197,17 +205,61 @@ void bridge_task(void*) {
     cfg.bpm_smoothing_alpha = 0.3f;
 
     prolink::BridgeCallbacks cb;
+
     cb.on_beat = [](const prolink::BeatPacket& p) {
         printf("[beat] dev=%u name='%s' bpm=%.2f pitch=%+.2f%% beat=%u/4\n",
                p.device_num, p.device_name,
                p.effective_bpm(), p.pitch_percent(), p.beat_in_bar);
+        // Downbeat = red, off-beats = dim white. Stays lit until the next
+        // beat overwrites it, so a missed beat is also a missed LED kick.
+        const uint32_t color = (p.beat_in_bar == 1)
+            ? g_pixel.Color(255, 0, 0)
+            : g_pixel.Color(40, 40, 40);
+        g_pixel.setPixelColor(0, color);
+        g_pixel.show();
     };
+
+    // Status packets arrive at ~5 Hz — logging every one floods the console
+    // and hides the events that matter. Track the fields that actually
+    // change state and log only on transition. BPM/pitch deltas come
+    // through [beat] already, so we ignore those here.
+    struct StatusTrack {
+        bool     have_prev = false;
+        uint8_t  device_num = 0;
+        bool     playing    = false;
+        bool     master     = false;
+        bool     synced     = false;
+        bool     on_air     = false;
+        uint16_t mv         = 0;
+    };
+    static StatusTrack prev;
+
     cb.on_status = [](const prolink::StatusPacket& p) {
-        printf("[stat] dev=%u name='%s' bpm=%.2f pitch=%+.2f%% master=%d play=%d sync=%d on_air=%d Mv=0x%04x\n",
-               p.device_num, p.device_name,
-               p.effective_bpm(), p.pitch_percent(),
-               p.is_master(), p.is_playing(), p.is_synced(), p.is_on_air(), p.mv);
+        const bool changed =
+            !prev.have_prev ||
+            prev.device_num != p.device_num ||
+            prev.playing    != p.is_playing() ||
+            prev.master     != p.is_master()  ||
+            prev.synced     != p.is_synced()  ||
+            prev.on_air     != p.is_on_air()  ||
+            prev.mv         != p.mv;
+
+        if (changed) {
+            printf("[stat] dev=%u name='%s' bpm=%.2f pitch=%+.2f%% master=%d play=%d sync=%d on_air=%d Mv=0x%04x%s\n",
+                   p.device_num, p.device_name,
+                   p.effective_bpm(), p.pitch_percent(),
+                   p.is_master(), p.is_playing(), p.is_synced(), p.is_on_air(), p.mv,
+                   prev.have_prev ? "" : "  (initial)");
+            prev.have_prev   = true;
+            prev.device_num  = p.device_num;
+            prev.playing     = p.is_playing();
+            prev.master      = p.is_master();
+            prev.synced      = p.is_synced();
+            prev.on_air      = p.is_on_air();
+            prev.mv          = p.mv;
+        }
     };
+
     cb.on_log = [](const char* msg) {
         printf("[bridge] %s\n", msg);
     };
@@ -227,6 +279,14 @@ void bridge_task(void*) {
 void setup() {
     delay(500);
     printf("\n[xdj-bridge] firmware — full Bridge integration\n");
+
+    // Initialize the onboard WS2812B and flash a brief identity color so
+    // we can tell at a glance that setup() ran (independent of network
+    // state). Yellow until link comes up, then the beat callbacks take over.
+    g_pixel.begin();
+    g_pixel.setPixelColor(0, g_pixel.Color(60, 40, 0));
+    g_pixel.show();
+
     init_ethernet();
 
     // Bridge task on Core 1 alongside the Arduino loop. 8 KB stack is
