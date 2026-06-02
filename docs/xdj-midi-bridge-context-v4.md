@@ -11,10 +11,24 @@ before the board was in hand).
 
 ## Where the project is right now
 
+**Status: 2026-06-01 — the full bridge works end-to-end on real hardware.**
+`XDJ-XZ → W5500/Ethernet → parse → dual-source PLL → 24 PPQN clock → USB-A
+host → synth`, verified live with **both a Moog Sub 25 and an OP-XY** locking
+to the XZ's tempo. See [session-notes.md](session-notes.md) for the running
+handoff and the exact next steps. Summary:
+
 - Protocol fully reverse-engineered and verified against two real captures (see v3).
-- Hardware bought, USB-A host port soldered, and **electrically bench-tested and passing**
-  (continuity + no shorts + correct +5V polarity confirmed with a multimeter).
-- **Next step is firmware.** Nothing has been flashed yet beyond the board's factory test.
+- Firmware (`firmware/`) running on the board: Ethernet up, Pro DJ Link
+  received, master tracked, clock generated, **USB MIDI host enumerating real
+  devices and clocking them**. The one non-obvious fix that made USB host work:
+  IDF 4.4 aborts enumeration if a device's config descriptor exceeds
+  `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE` (default 256) — USB-MIDI synths
+  blow past that, so it's bumped to 2048 in `sdkconfig.defaults`.
+- **Only the USB-A host jack is wired so far** (bench-tested: continuity, no
+  shorts, +5 V polarity). Still to wire: **DIN-5 MIDI out, the SSD1306 OLED,
+  the EC11 encoder, and the nudge/tap buttons** (pins reserved below).
+- Known gap: USB-host latency differs from the desktop version — a clock
+  phase-offset / nudge needs to be measured and dialed in (not yet built).
 - The board is on header pins; peripherals will be connected with dupont jumpers for bring-up,
   then made permanent (likely a crimped dupont harness, not soldered-to-pin) once proven.
 

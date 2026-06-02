@@ -1,5 +1,13 @@
 # XDJ-XZ → MIDI Clock Bridge: Project Handoff v3
 
+> **This is the original pre-build planning doc — kept for the research/protocol
+> background.** For current state see [session-notes.md](session-notes.md) (live
+> status + next steps), [xdj-midi-bridge-context-v4.md](xdj-midi-bridge-context-v4.md)
+> (hardware addendum), and [phases.md](phases.md). As of 2026-06-01 the box runs
+> the full pipeline on a Waveshare ESP32-S3-ETH and clocks a Sub 25 / OP-XY over
+> a USB-A host jack; only that jack is wired (DIN out + OLED/encoder/buttons are
+> still to come).
+
 **Author**: Calvin (staff backend engineer, Go/Python/Rust)
 **Language**: C++17 throughout — desktop prototype and ESP32-S3 firmware share a core library
 **Status**: Research complete, ready to build

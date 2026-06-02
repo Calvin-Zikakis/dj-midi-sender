@@ -1,209 +1,135 @@
-# Session notes — picking back up
+# Session notes / handoff — picking back up
 
-This is a working scratch doc, not a spec. It captures the *current state of
-the bridge* and the *exact next thing to test* so the next session doesn't
-re-derive everything. The canonical references are still
-[architecture.md](architecture.md) and [phases.md](phases.md); when this
-doc disagrees with those, those are right (or this doc is stale).
+Working scratch doc, not a spec: the *current state of the box* and the
+*exact next things to do*, so the next session doesn't re-derive everything.
+Canonical references: [architecture.md](architecture.md) (protocol/PLL),
+[phases.md](phases.md) (roadmap), [xdj-midi-bridge-context-v4.md](xdj-midi-bridge-context-v4.md)
+(hardware addendum + pin map). When this doc disagrees with those on
+*hardware/build status*, this doc is newer.
+
+Last updated: **2026-06-01.**
 
 ## Where we are right now
 
-Phase 1 desktop binary is feature-complete on paper: `xdj_bridge` /
-`xdj_replay` build clean, the GUI works, two-axis offsets persist. The last
-*live* test against the XDJ-XZ was the run that produced
-[the GUI screenshot showing pitch = 16.1252×](#the-screenshot-bug) — i.e.
-status packets were flowing but the bridge was reading the wrong byte
-offsets and the displayed BPM was garbage. The clock still tracked
-"decently" because the beat-only fallback was carrying tempo while the
-status path was effectively no-ops.
-
-**Everything below this point has been fixed in code since that test but
-has not yet been re-run live.** First task next session: run the live test
-again, see whether the GUI now shows the correct track BPM + a sensible
-pitch multiplier near 1.0×, and whether the master / playing / sync /
-on-air flag dots light up.
-
-## What changed in this session (chronological)
-
-Five distinct bugs were found and fixed in this order. Each one masked the
-next, which is why it took several test cycles:
-
-1. **Phase correction had the wrong sign**
-   [`lib/prolink/clock.cpp`](../lib/prolink/clock.cpp) — `correct_phase()`
-   was computing `err = -t * period - off`. When the clock was ahead of
-   the beat, this produced a negative error that *sped up* the clock
-   further, instead of slowing it down. The PLL was unstable in beat-only
-   mode. Fixed to `err = t * period - off`.
-
-2. **Tempo froze the moment the clock started**
-   [`lib/prolink/bridge.cpp`](../lib/prolink/bridge.cpp) — the beat-only
-   tempo update path was guarded by `!playing_.load()`, so once the clock
-   started it stopped tracking the pitch slider. Removed the guard so
-   `effective_bpm()` from beat packets keeps updating tempo continuously.
-
-3. **Timer jitter from `sleep_until`**
-   [`desktop/timer_posix.cpp`](../desktop/timer_posix.cpp) — `std::this_thread::sleep_until`
-   on macOS has ~1-2ms variance, which read as ±5 BPM in the GUI's 0.5s
-   sample window. Replaced with `mach_wait_until` + `thread_policy_set`
-   (the macOS real-time scheduling class CoreAudio uses) + a final ~50µs
-   busy-spin. Sub-100µs jitter now.
-
-4. **Keep-alive socket bound to `0.0.0.0` — broadcast `sendto` failing intermittently**
-   [`desktop/main.cpp`](../desktop/main.cpp) — without an interface bind,
-   macOS sometimes couldn't find a route to `169.254.255.255` (link-local
-   broadcast) and returned `ENETUNREACH`. Fixed by binding the keepalive
-   socket to the discovered interface IP (e.g. `169.254.239.191:0`)
-   instead of `0.0.0.0:0`.
-
-5. **Keep-alive packet layout was wrong — XZ ignored every announce**
-   [`lib/prolink/packets.cpp`](../lib/prolink/packets.cpp) → `build_keepalive_packet()` —
-   our packet was off-by-one from byte 0x0B onward (we omitted the
-   padding byte between `type` at 0x0A and `model` at 0x0C) and missing
-   several constants the XZ checks for (`u1=0x01`, `device_type=0x02`,
-   subtype `0x36`, `device_count=0x02`, `flags=0x01`, `u4=0x64`).
-   Rewrote the builder to match python-prodj-link's verified layout byte
-   for byte. Also changed default device number from `7` → `5`
-   (python-prodj-link's working default).
-
-   **This is the fix that unlocked status packets.** Confirmed in the
-   last test — 2380 status packets received in the session.
-
-6. **Status packet field offsets were ~104 bytes off**
-   [`lib/prolink/packets.cpp`](../lib/prolink/packets.cpp) → `parse_status_packet()` —
-   the offsets that came in from the initial handoff doc (`0x28`, `0x30`,
-   `0x5A`) were from an unverified source and did not match beat-link,
-   dysentery, or python-prodj-link. We were reading
-   `loaded_player_number + loaded_slot + track_analyze_type` as a fake
-   "pitch", which is where the 16.1252× GUI value came from.
-
-   Corrected offsets (triangulated from beat-link `CdjStatus.java`,
-   python-prodj-link `packets.py`, and dysentery):
-   - `Pitch1` (effective pitch — use this): **0x8C** (4 B)
-   - `Pitch2` (local fader — ignore): **0x98** (4 B)
-   - BPM × 100: **0x92** (2 B)
-   - `Mv` / BpmState: **0x90** (2 B)
-   - Flags (low byte of state u16 at 0x88): **0x89** (1 B) — bits unchanged
-   - Beat-in-bar: **0xA6** (1 B) — unchanged
-
-Bridge-level features added alongside these:
-- **Bar-slip detection** in `Bridge::handle_beat_packet` — tracks expected
-  `beat_in_bar` sequence (1→2→3→4→1); if a beat packet is dropped, the
-  bridge queues a hard `MIDI Stop` + `MIDI Start` on the next downbeat to
-  realign the slave's bar 1 with the master's. Resets cleanly on
-  master-pause and silence-timeout. This is the feature for the user's
-  question "should we reset off the first beat occasionally".
-- **PLL default gain** bumped 16 → 32 (smoother per-tick corrections;
-  still overridable with `--gain`).
-- **Verbose keepalive logging** in the bridge (`[bridge] keepalive → ip:port device=N ok/FAILED`)
-  for diagnosing connectivity.
-- VS Code `.vscode/launch.json` and `.vscode/tasks.json` with one-click
-  run configs for live / replay / tcpdump tasks.
-
-## The screenshot bug
-
-For reference, this is what the last live run looked like:
+**The full bridge works end-to-end on real hardware.** On the Waveshare
+ESP32-S3-ETH:
 
 ```
-Track BPM:    0.00 × 16.1252  (+1512.52 %)
-Effective:    0.00 BPM
-Flags:        master=·  playing=·  sync=·  on-air=·
-Mv valid:     yes  (0x8000)
-Packets:      311 beat / 2380 status
+XDJ-XZ ─Ethernet─→ W5500 ─SPI─→ ESP32-S3 ─(parse → dual-source PLL → 24 PPQN)
+        → USB-A host jack ─USB MIDI─→ synth
 ```
 
-- `Mv valid: yes` proved we *were* receiving and parsing real status
-  packets (0x90 was the one offset that happened to be right).
-- BPM = 0 proved 0x5A is wrong (lands in a 32-byte padding region).
-- Pitch = 16.1252 proved 0x28 is wrong (lands on
-  `loaded_player_number/loaded_slot/track_analyze_type`).
-- All-unlit flags is consistent with the bridge reading garbage and
-  passing it through `is_playing()` / `is_master()`, which then return
-  false. With the offset fix this should clear up.
+Verified live: both a **Moog Sub 25** and an **OP-XY** plugged into the USB-A
+jack enumerate and lock to the XZ's tempo (LED flashes green on the beat, the
+synths follow pitch-fader moves). Phase 1 (desktop binary) is done and is now
+reference/debug material.
 
-## Next test, exactly
+### What's working
+- **Ethernet / W5500** over SPI, static link-local `169.254.42.42/16`, no DHCP.
+- **Pro DJ Link reception**, master tracking, dual-source PLL, 24 PPQN clock
+  generation. Validated on serial via the `diag` build (`clocks=…` climbing,
+  `[beat]`/`[stat]` flowing, `master=1`).
+- **USB MIDI host** — enumerates real class-compliant USB-MIDI devices and
+  clocks them. See the enumeration fix below.
+- **WS2812 status LED** as a downbeat indicator + USB-host-state diagnostic
+  (legend below). This board's LED is on **GP21** (R15 stuffed); firmware
+  drives both GP4 and GP21 so it's population-agnostic.
 
-1. Run task **"run: bridge — live verbose + GUI"** with the XZ playing a
-   rekordbox track at a known BPM.
-2. In the **Master** panel verify:
-   - **Track BPM** shows the real BPM (115 in the user's earlier test).
-   - **Pitch multiplier** is near 1.0× when the slider is at 0.
-   - **Flags**: `playing` is lit. `master` should also be lit since the
-     XZ is the only deck. `sync` and `on-air` depend on XZ state.
-3. Move the XZ pitch slider. The Effective BPM in the GUI should follow
-   smoothly within ~200 ms (status packet cadence) — *not* stepped every
-   beat like the beat-only path used to do.
-4. In the **MIDI clock out** panel, watch the tick rate. With status
-   packets driving tempo, the rate should be much tighter than the ±5 BPM
-   wobble we were seeing. Phase error should settle near 0 within a few
-   beats of starting playback.
-5. Listen to the OP-XY. The sequencer should hold time through pitch
-   sweeps without manual intervention.
+### The one fix that made USB host work (don't lose this)
+IDF 4.4's hub driver **aborts enumeration** if a device's configuration
+descriptor is larger than `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE` (default
+**256**, in `hub.c` `ENUM_STAGE_CHECK_SHORT_CONFIG_DESC`). A USB mouse (~50 B)
+enumerates; USB-MIDI synths (audio-control + MIDIStreaming + a descriptor per
+jack; composite audio+MIDI on the OP-XY) exceed 256, so `NEW_DEV` was never
+delivered and our code never saw the device. **Symptom:** mouse → LED red
+(`kDeviceNoMidi`), synths → LED stuck blue (`kWaiting`). **Fix:** bumped to
+**2048** in `firmware/sdkconfig.defaults`. If a future device still won't
+enumerate (stuck blue) but a mouse does, bump it higher (4096) first.
 
-## What's still on the Phase 1 punch list
+## Hardware: what's wired vs. not
 
-From [phases.md](phases.md), unticked items at the start of this session
-that remain unticked (re-evaluate after the next live test):
+**Wired so far: only the USB-A host jack.** Bench-verified (continuity, no
+shorts, +5 V polarity):
+- USB-A D− → IO19, D+ → IO20 (native USB, parallel with the USB-C jack)
+- USB-A VBUS → board `VBUS`, GND → `GND`
 
-- [ ] Live test confirming status packets unlock + tempo tracks pitch slider smoothly
-- [ ] Tune PLL gain by ear (`/16` snappy vs `/32` smooth vs `/64` smoother). Default is now `/32`.
-- [ ] Full pitch-sweep live test — OP-XY must hold time and bar alignment without intervention
-- [ ] Calibrate OP-XY clock offset by ear and confirm persistence across restart
-  (the persistence side already works — last test loaded `+9.0 ms` for OP-XY automatically)
+**Not wired yet** (pins reserved — see v4 pin map):
+- [ ] **DIN-5 MIDI out** — IO17 → 220 Ω → DIN pin 5 (Sub 25 was tested over
+      *USB*, not DIN; the `MidiUart` sink isn't coded yet either)
+- [ ] **SSD1306 OLED** (I²C) — SDA IO15, SCL IO16, VCC 3V3
+- [ ] **EC11 rotary encoder** — A IO18, B IO2, SW IO1 (INPUT_PULLUP)
+- [ ] **Nudge / tap buttons** — IO38, IO39, IO40 (INPUT_PULLUP → GND)
+- [ ] *(optional)* **USB-UART console adapter** — IO43 (U0TXD) / IO44 (U0RXD)
+      / GND, for serial logs while in USB-host mode (see below)
 
-## Known issues / follow-ups
+## Next session — exact next steps
 
-- **Architecture doc had wrong status-packet offsets.** Fixed in this
-  session. If we ever find another field offset that looks plausible but
-  isn't tested live, that's still suspect — the original doc's offsets
-  cited python-prodj-link as a source but didn't match.
-- **Bar-slip detection isn't tested live yet.** The code path runs only
-  when a beat packet is missed; we won't know it works until we actually
-  drop a beat or get a real-world slip. Worth provoking deliberately
-  (e.g. by briefly unplugging the ethernet) once basics are confirmed.
-- **The handshake question is open but probably moot.** Dysentery
-  documents a 4-stage announce handshake (types 0x0A → 0x00 → 0x02 →
-  0x04 → 0x06 keepalive). python-prodj-link skips stages 1-4 and only
-  sends 0x06 — and it works. We do the same. If the XZ ever refuses to
-  respond again, implementing the full handshake is the obvious next
-  lever to pull. Skip until needed.
-- **`ms_next_beat` is parsed but unused.** Beat packets carry the exact
-  time until the next beat. Could be used as a feedforward to lock tick 0
-  of each beat precisely. Current implementation just lets the PLL
-  converge. Probably good enough; revisit only if jitter is still
-  audible after status packets are working.
-- **CDJ-3000 compatibility** of the keepalive packet uses the
-  `device_count=2` / `u4=0x64` defaults from python-prodj-link. If we
-  ever test against a CDJ-3000 specifically, double-check those.
+1. **Measure the USB latency vs. the desktop version, then compensate.** The
+   ESP32 path has a different (slightly higher) offset than the Mac. Measure:
+   record XDJ master out + the synth's output into Audacity/any DAW, read the
+   transient gap in ms; do it for desktop and ESP32, the difference is the
+   number to dial in. Then **implement a static clock phase-offset** (ms or
+   fractional ticks applied to all outgoing clock), and **wire the three nudge
+   buttons** (IO38/39/40) for live ±1-tick shifts like the desktop GUI.
+2. **Wire + code DIN MIDI out** (IO17 → 220 Ω → DIN 5) so the Sub 25 can clock
+   over DIN simultaneously with USB. Both sinks share the one PLL tick callback.
+3. **Wire the UI** (OLED, encoder, buttons) — Phase 4. Pins above.
+4. *(optional, anytime)* Wire the **UART console** so we're not LED-only in
+   host mode.
 
-## Build / run reference (in case context cache is cold)
+## Build / flash / debug reference
 
 ```bash
-# build
-cmake --build build
+cd firmware
 
-# live, GUI, verbose (the main task)
-./build/desktop/xdj_bridge --midi-port 'OP-XY' --visualize --verbose
+# production (USB host mode; serial console is DEAD once it boots)
+pio run -e waveshare_esp32s3_eth -t upload --upload-port /dev/cu.usbmodemXXXX
 
-# offline (replay capture in T1, bridge in T2)
-./build/desktop/xdj_replay --file captures/xdj-xz-export-mode-pitch-sweep.pcapng --loop
-./build/desktop/xdj_bridge --bind 127.0.0.1 --midi-port 'OP-XY' --no-vcdj --verbose
+# diag (counter-stub MIDI, skips usb_host_install → USB-C serial stays alive;
+# use this to debug the network → master → clock half)
+pio run -e diag -t upload --upload-port /dev/cu.usbmodemXXXX
+pio device monitor -e diag       # or: ~/.platformio/penv/bin/python with pyserial
 ```
 
-VS Code: Cmd+Shift+P → "Tasks: Run Task" → pick. tcpdump tasks need sudo.
+**Flashing gotchas:**
+- In **production/host mode the serial port doesn't enumerate** (USB-OTG takes
+  the shared USB PHY from USB-Serial-JTAG). To flash, force the ROM bootloader:
+  **hold BOOT, tap RESET, release BOOT**, then upload. The port shows up as
+  `/dev/cu.usbmodemXXXX`.
+- Native-USB upload **sometimes drops mid-flash** (“Device not configured”).
+  Just **re-run the upload** — it usually takes on the second try.
+- **Power rule:** when a USB device is in the USB-A jack, power the board from
+  a **charger/wall**, NOT a computer — a computer on USB-C is a second host on
+  the shared IO19/20 lines and they fight. Charger = VBUS only = fine.
 
-## Files touched this session
+**LED legend (production/host build):**
+| Color | Meaning |
+|---|---|
+| yellow (brief) | booted |
+| dim **blue** | host driver up, **no device enumerated** |
+| **red** | a device enumerated but exposed **no MIDI interface** |
+| **magenta** | USB host driver failed to install |
+| **green** flashes on the beat | **working** — enumerated + clocking |
 
-```
-desktop/main.cpp                 # device_num default 5; keepalive socket bound to iface IP; default gain 32
-desktop/timer_posix.cpp          # mach_wait_until + thread_policy_set
-lib/prolink/bridge.cpp           # tempo always updates from beats; verbose keepalive log; bar-slip detection
-lib/prolink/bridge.hpp           # default device_num 5; bar-slip state fields
-lib/prolink/clock.cpp            # phase correction sign fix
-lib/prolink/packets.cpp          # keepalive packet layout rewrite; status packet offset fix
-lib/prolink/packets.hpp          # build_keepalive_packet param rename
-docs/architecture.md             # corrected status-packet offset table; corrected Pitch1 reference
-.vscode/launch.json              # new — debug configs (cppdbg/lldb)
-.vscode/tasks.json               # new — one-click run / tcpdump tasks
-```
+## Why there's no serial in host mode (and the options)
+USB-Serial-JTAG and USB-OTG share the **one** internal USB PHY on IO19/20, so
+installing the host driver kills the USB-C console. You **cannot** view data by
+plugging the USB-A into a computer either (both would be hosts). Options to see
+logs while hosting: (a) a **USB-UART adapter on IO43/44** + repoint the console
+to UART0 (`CONFIG_ESP_CONSOLE_UART_DEFAULT`); (b) **UDP-over-Ethernet logging**
+(needs the Mac on the same Ethernet switch as the board + XZ); (c) the **LED
+codes** above. For most network/clock debugging, just flash the `diag` build
+and watch USB-C serial.
 
-No commits have been made; everything is on the working tree.
+## Known issues / follow-ups
+- **USB latency offset** vs desktop — measure + compensate (step 1 above).
+- **DIN MIDI out** not implemented (`MidiUart` sink + wiring).
+- **uClock was dropped:** the firmware uses a native `esp_timer` one-shot shim
+  (`firmware/src/timer_esp.cpp`) as `ITimer`, not uClock (uClock 2.2.x needs
+  arduino-esp32 v3 timer APIs; this platform ships v2.x). phases.md still
+  describes the old uClock plan.
+- **Bar-slip / drift recovery** (Phase 1.5) exists in `lib/prolink/` but hasn't
+  been provoked/verified on the firmware.
+- The board ships one of two 0 Ω LED jumpers (R13→GP4 default, R15→GP21); this
+  unit is **GP21**. R13/R15 are LED selectors, **not** USB selectors (an
+  earlier doc got that wrong).

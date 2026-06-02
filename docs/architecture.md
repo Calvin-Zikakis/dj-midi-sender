@@ -1,5 +1,10 @@
 # Architecture
 
+> **Build/hardware status lives in [session-notes.md](session-notes.md)** (current
+> as of 2026-06-01: full pipeline working on the Waveshare ESP32-S3-ETH, USB-MIDI
+> host clocking a Sub 25 / OP-XY). This doc is the protocol/PLL reference and
+> stays accurate; it does not track day-to-day hardware state.
+
 This document captures the Pro DJ Link wire format, the dual-source clock
 design, and the C++ module boundaries. Everything below is verified
 empirically against the captures in [../captures/](../captures/) — not

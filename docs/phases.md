@@ -12,9 +12,18 @@ prototype. The Phase-1 macOS binary is the same library wrapped in POSIX
 sockets, RtMidi, and a `std::thread` timer. Every line in `lib/prolink/`
 ships in the final box.
 
-See [architecture.md](architecture.md) for protocol / PLL details.
+See [architecture.md](architecture.md) for protocol / PLL details, and
+[session-notes.md](session-notes.md) for the live running status + handoff.
 
-## Phase 1 — Desktop binary on Mac  ◀ current
+> **Status (2026-06-01):** Phase 1 ✅ done. Phases 2 + 3 are effectively done
+> for the **USB** output — the box runs the full pipeline on the Waveshare
+> ESP32-S3-ETH and clocks a Sub 25 / OP-XY over the USB-A host jack. **DIN MIDI
+> out is not wired yet**, and the Phase-4 UI (OLED, encoder, buttons) is not
+> wired. Two implementation choices diverged from the plan below: the firmware
+> timer is a native `esp_timer` shim (`TimerEsp`), **not uClock**, and the USB
+> host uses ESP-IDF's native `usb_host` library, **not `ESP32_Host_MIDI`**.
+
+## Phase 1 — Desktop binary on Mac  ✅ done
 
 ```
 XDJ-XZ ─ethernet─→ Mac (xdj_bridge) ─USB MIDI─→ OP-XY
@@ -71,7 +80,12 @@ bridge knowing.
 Punt on this until Phase 1 is otherwise solid — drift hasn't been an
 audible problem in the captures we have.
 
-## Phase 2 — ESP32-S3 firmware (DIN MIDI only)
+## Phase 2 — ESP32-S3 firmware  ◀ current (USB done; DIN pending)
+
+> Network/clock half ✅ (validated on the `diag` build over serial). DIN MIDI
+> output on IO17 is **not wired or coded yet** — the Sub 25 was tested over
+> USB, not DIN. Board is the **Waveshare ESP32-S3-ETH** (integrated W5500),
+> not the DevKitC-1 + standalone module described below.
 
 ```
 Pro DJ Link switch ─RJ45─→ [ W5500 ─SPI─ ESP32-S3 ─UART─ DIN MIDI ] ──→ Sub 27
@@ -109,7 +123,13 @@ required libraries available as packages.
 **Exit criteria:** standalone box matches the Phase-1 Mac bridge's lock
 quality driving the Sub 27. No laptop in the signal path.
 
-## Phase 3 — Add USB MIDI host (OP-XY on the box)
+## Phase 3 — Add USB MIDI host (OP-XY on the box)  ✅ working (USB-A jack)
+
+> Done and verified: USB-A jack wired straight to the native USB pins
+> (D−→IO19, D+→IO20), ESP32 as host, OP-XY + Sub 25 enumerate and follow the
+> master. Implemented with IDF's native `usb_host` (not TinyUSB /
+> ESB32_Host_MIDI). Remaining: this output and the (unwired) DIN output share
+> the one PLL, which is already true in code.
 
 ```
                                                   ┌─UART──→ DIN MIDI ──→ Sub 27
