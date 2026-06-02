@@ -2,15 +2,20 @@
 
 Standalone bridge that turns a Pioneer XDJ-XZ's Pro DJ Link Ethernet broadcast
 into rock-solid MIDI clock with continuous tempo tracking. End-state hardware
-is an **ESP32-S3 + W5500** box with a 5-pin DIN output and a USB MIDI host
-jack — no laptop in the signal chain.
+is an **ESP32-S3 + W5500** box with a USB MIDI host jack (and a planned 5-pin
+DIN output) — no laptop in the signal chain.
+
+**It runs on real hardware today:** a Waveshare ESP32-S3-ETH clocks a
+**Teenage Engineering OP-XY** and a **Moog Sub 25** over USB, both plugged into
+the box's USB-A host jack and locked to the XZ's tempo. (Phase 1 also drove the
+OP-XY directly from a Mac over CoreMIDI/RtMidi — still useful for protocol
+debugging; see below.)
 
 Slave targets:
 
-- **Teenage Engineering OP-XY** via USB MIDI (the Phase-1 target — driven
-  directly from the Mac's USB through CoreMIDI / RtMidi)
-- **Moog Subsequent 27** via 5-pin DIN (Phase 2 — needs the firmware's UART
-  DIN output; not exercised in Phase 1)
+- **OP-XY** and **Moog Sub 25** via **USB MIDI** — the box is the USB host;
+  both enumerate on the USB-A jack. ✅ working
+- **5-pin DIN** out (IO17 → 220 Ω → DIN pin 5) — planned, not yet wired/coded.
 
 The XDJ-XZ has no native MIDI clock output. Pro DJ Link over Ethernet is the
 only extraction path.
@@ -23,8 +28,9 @@ Pioneer broadcasts two relevant packet types on the link:
 once we announce ourselves as a virtual CDJ on port 50000. Tempo is taken
 from status packets (so pitch-slider sweeps follow within ~200 ms instead of
 ~500 ms), and beat packets are used only to nudge phase. A 24 PPQN clock is
-generated on a hardware timer (desktop: `std::thread`; firmware: ESP32
-hardware timer via [`uClock`](https://github.com/midilab/uClock)).
+generated on a hardware timer (desktop: `std::thread`; firmware: a native
+ESP-IDF `esp_timer` one-shot shim — uClock was dropped due to an arduino-esp32
+v2/v3 timer-API mismatch).
 
 See [docs/architecture.md](docs/architecture.md) for protocol details,
 field offsets, and PLL design. See [docs/phases.md](docs/phases.md) for the
@@ -47,10 +53,18 @@ dj-midi-sender/
 │   ├── timer_posix.hpp/.cpp    # std::thread-based ITimer
 │   ├── main.cpp                # xdj_bridge entry point
 │   └── replay.cpp              # xdj_replay — pcapng playback for offline dev
-├── firmware/                   # Phase 2/3 — ESP32-S3 (not yet built)
+├── firmware/                   # Phase 2/3/4 — Waveshare ESP32-S3-ETH (built; runs on hardware)
+│   ├── platformio.ini          # envs: waveshare_esp32s3_eth (prod) + diag (serial debug)
+│   ├── sdkconfig.defaults      # IDF config: W5500 SPI, USB host, 16 MB flash / PSRAM
+│   └── src/
+│       ├── udp_w5500.*         # IUdpSocket — lwIP over the onboard W5500
+│       ├── timer_esp.*         # ITimer — esp_timer one-shot
+│       ├── midi_host_usb.*     # IMidiOut — native USB MIDI host (esp_usb_host)
+│       ├── ui_display.*        # SSD1306 status screen (U8g2, hardware I2C)
+│       ├── ui_input.*          # EC11 encoder + nudge/tap buttons
+│       └── main.cpp            # ethernet bring-up + wiring it all together
 ├── captures/                   # canonical pcapng captures for offline replay
-├── docs/                       # architecture + phases
-└── claude/                     # project handoff doc (source of truth for plan)
+└── docs/                       # architecture, phases, session-notes (live handoff), v3/v4 context
 ```
 
 `lib/prolink/` is pure C++17 with no platform headers beyond `<cstdint>`,
@@ -172,6 +186,36 @@ The scheduler sees only the sum. Splitting them means the OP-XY's clock
 calibration stays correct across tracks while you twiddle grid-offset
 between songs whose intros are wonky.
 
+## Firmware (ESP32-S3)
+
+The box is a **Waveshare ESP32-S3-ETH** (integrated W5500). `lib/prolink/`
+compiles unchanged — only the I/O layer differs (`firmware/src/`). Built with
+PlatformIO; the same core that runs the desktop binary drives the hardware.
+
+```bash
+cd firmware
+
+# production — USB MIDI host mode (this is the box)
+pio run -e waveshare_esp32s3_eth -t upload --upload-port /dev/cu.usbmodemXXXX
+
+# diag — counter-stub MIDI, keeps the USB-C serial console alive for debugging
+pio run -e diag -t upload --upload-port /dev/cu.usbmodemXXXX
+pio device monitor -e diag
+```
+
+Gotchas (full list in [docs/session-notes.md](docs/session-notes.md)):
+
+- **No serial in host mode.** USB-Serial-JTAG and USB-OTG share one PHY, so the
+  production build's console is dead — status shows on the OLED and the RGB LED
+  (blue = waiting, red = device without a MIDI interface, green = clocking).
+  Use the `diag` build when you need serial.
+- **To flash**, force the ROM bootloader: hold BOOT, tap RESET, release BOOT.
+- **Power rule:** with a synth in the USB-A jack, power from a charger/wall, not
+  a computer — two hosts on the shared IO19/20 lines conflict.
+
+Board pinout, the USB-host enumeration fix, and wiring notes are in
+[docs/xdj-midi-bridge-context-v4.md](docs/xdj-midi-bridge-context-v4.md).
+
 ## Captures
 
 Two pcapng files in [captures/](captures/) verified against real XZ hardware:
@@ -190,16 +234,27 @@ you need the live XZ.
 - **Export mode only.** The XZ drops Pro DJ Link entirely in Performance mode.
 - **Rekordbox-analyzed tracks only for valid BPM.** Unanalyzed audio sets
   `Mv != 0x8000`; freeze the last known good tempo in that case.
-- **Use `Pitch1` (status `0x28`), never `Pitch2` (`0x30`).** When a CDJ
+- **Use `Pitch1` (status `0x8C`), never `Pitch2` (`0x98`).** When a CDJ
   is synced to a master, `Pitch1` tracks the master and `Pitch2` stays
-  pinned to the local fader — they diverge.
+  pinned to the local fader — they diverge. (The original handoff's `0x28`/
+  `0x30` were wrong; corrected offsets are in [docs/architecture.md](docs/architecture.md).)
 - **Virtual CDJ uses device number 7.** CDJ deck numbers 1–4 are reserved
   for real decks; 5–6 are reserved for mixers. 7 is safe.
 
 ## Status
 
-Phase 1 in progress. Currently working through the desktop binary against
-the captures — see [docs/phases.md](docs/phases.md) for the punch list.
+- **Phase 1 — desktop binary:** ✅ done, validated live against the XZ.
+- **Phase 2/3 — firmware:** ✅ running on a Waveshare ESP32-S3-ETH. Full pipeline
+  on hardware: Ethernet → parse → dual-source PLL → 24 PPQN → USB MIDI host →
+  OP-XY / Sub 25, both locking to the master's tempo and pitch.
+- **Phase 4 — front panel:** OLED status screen + nudge buttons (clock-offset
+  trim) working; EC11 encoder partially wired; DIN out + tap button pending.
+- **Open bugs:** residual clock jitter after the offset, and the OP-XY
+  occasionally stops playing — both filed with suspected causes in
+  [docs/session-notes.md](docs/session-notes.md).
+
+[docs/session-notes.md](docs/session-notes.md) is the live handoff;
+[docs/phases.md](docs/phases.md) is the roadmap.
 
 ## License
 
