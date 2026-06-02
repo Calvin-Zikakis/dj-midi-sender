@@ -24,11 +24,13 @@ handoff and the exact next steps. Summary:
   IDF 4.4 aborts enumeration if a device's config descriptor exceeds
   `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE` (default 256) — USB-MIDI synths
   blow past that, so it's bumped to 2048 in `sdkconfig.defaults`.
-- **Only the USB-A host jack is wired so far** (bench-tested: continuity, no
-  shorts, +5 V polarity). Still to wire: **DIN-5 MIDI out, the SSD1306 OLED,
-  the EC11 encoder, and the nudge/tap buttons** (pins reserved below).
-- Known gap: USB-host latency differs from the desktop version — a clock
-  phase-offset / nudge needs to be measured and dialed in (not yet built).
+- **Wired + working:** USB-A host jack, the **SSD1306 OLED** (HW I²C, live
+  status screen), and the **nudge buttons** (±1 ms clock-offset trim).
+  **Partially wired:** the **EC11 encoder** (on a flaky breadboard, common not
+  grounded — protoboard inbound). **Not yet wired:** DIN-5 MIDI out, the tap
+  button. (Pins reserved below.)
+- Known bugs (see [session-notes.md](session-notes.md)): residual **clock
+  jitter** even after the offset, and the **OP-XY occasionally stops playing**.
 - The board is on header pins; peripherals will be connected with dupont jumpers for bring-up,
   then made permanent (likely a crimped dupont harness, not soldered-to-pin) once proven.
 

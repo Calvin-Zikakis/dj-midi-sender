@@ -152,6 +152,12 @@ Sub 27 simultaneously clocks off the DIN jack.
 
 ## Phase 4 — Productization
 
+> **Status (2026-06-02):** started early — the **OLED** (HW-I²C status screen),
+> the **downbeat LED**, and **nudge buttons** (clock-offset trim) are wired and
+> working. The **EC11 encoder** is on a breadboard but not yet functional
+> (common/ground); **tap-tempo** and **DIN out** are pending. Two open bugs
+> (clock jitter, OP-XY dropouts) — see [session-notes.md](session-notes.md).
+
 - **Custom PCB** combining ESP32-S3 + W5500 + DIN buffer + USB-A host jack +
   power, replacing the modular dev boards.
 - **Enclosure** — laser-cut or off-the-shelf project box (Hammond 1593).
