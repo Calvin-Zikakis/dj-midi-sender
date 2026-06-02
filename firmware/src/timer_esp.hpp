@@ -37,6 +37,12 @@ private:
     esp_timer_handle_t handle_ = nullptr;
     std::function<uint32_t()> on_tick_;
     std::atomic<bool> running_{false};
+
+    // Absolute time (esp_timer µs) the *current* tick was scheduled for. Each
+    // re-arm targets a cumulative deadline rather than "now + interval", so
+    // callback execution time and esp_timer dispatch latency are absorbed
+    // instead of accumulating into tick-to-tick jitter.
+    int64_t next_deadline_us_ = 0;
 };
 
 }  // namespace firmware

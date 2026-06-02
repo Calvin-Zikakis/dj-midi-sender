@@ -23,7 +23,19 @@ void TimerEsp::timer_cb(void* arg) {
         self->running_.store(false);
         return;
     }
-    esp_timer_start_once(self->handle_, next_us);
+
+    // Anchor the next fire to a cumulative deadline so dispatch + callback
+    // latency doesn't accumulate as drift (which the PLL would then fight,
+    // showing up as audible tempo jitter). If we've fallen behind by more
+    // than a tick, resync to "now" rather than bunching ticks to catch up.
+    self->next_deadline_us_ += next_us;
+    const int64_t now   = esp_timer_get_time();
+    int64_t       delay = self->next_deadline_us_ - now;
+    if (delay < 1) {
+        delay = 1;
+        self->next_deadline_us_ = now + 1;
+    }
+    esp_timer_start_once(self->handle_, static_cast<uint64_t>(delay));
 }
 
 void TimerEsp::start(std::function<uint32_t()> on_tick) {
@@ -46,8 +58,10 @@ void TimerEsp::start(std::function<uint32_t()> on_tick) {
     }
 
     running_.store(true);
-    // First tick fires effectively immediately; the callback's return
-    // value sets every subsequent interval.
+    // Anchor the schedule to now; the first tick fires effectively
+    // immediately and the callback's return value sets every subsequent
+    // interval (relative to this cumulative deadline).
+    next_deadline_us_ = esp_timer_get_time();
     esp_timer_start_once(handle_, 1);
 }
 

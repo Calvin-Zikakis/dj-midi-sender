@@ -157,6 +157,7 @@ private:
     // the slave's bar 1 with the master's.
     uint8_t  expected_beat_in_bar_ = 0;   // 0 = "not yet observed"
     bool     bar_slip_pending_realign_ = false;
+    uint8_t  bar_slip_count_ = 0;         // consecutive unexpected beat numbers
 };
 
 }  // namespace prolink

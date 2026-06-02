@@ -16,6 +16,13 @@ uint64_t now_ms() {
 constexpr uint32_t RECV_TIMEOUT_MS = 5;
 constexpr size_t   RECV_BUF_LEN    = 1024;
 
+// A single dropped beat packet (UDP) makes the master's beat_in_bar appear to
+// skip a number, but our free-running clock never actually lost bar alignment
+// — so reacting to one mismatch with a hard Stop+Start just glitches the slave
+// (the OP-XY "randomly stops"). Only realign after the bar position disagrees
+// this many beats in a row, which a transient drop can't reach.
+constexpr uint8_t  BAR_SLIP_REALIGN_THRESHOLD = 3;
+
 }  // namespace
 
 Bridge::Bridge(IUdpSocket& beat_sock,
@@ -186,6 +193,7 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
             clock_.start();
             expected_beat_in_bar_ = 1;
             bar_slip_pending_realign_ = false;
+            bar_slip_count_ = 0;
             if (cfg_.verbose) log("start (downbeat)");
         } else if (!waiting_for_downbeat_) {
             waiting_for_downbeat_ = true;
@@ -208,15 +216,22 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     // master.
     if (expected_beat_in_bar_ != 0) {
         uint8_t expected_next = (expected_beat_in_bar_ % 4) + 1;
-        if (parsed->beat_in_bar != expected_next && !bar_slip_pending_realign_) {
-            bar_slip_pending_realign_ = true;
-            if (cfg_.verbose) {
-                char msg[80];
-                std::snprintf(msg, sizeof(msg),
-                              "bar slip: expected beat %u, got %u — realign on next downbeat",
-                              expected_next, parsed->beat_in_bar);
-                log(msg);
+        if (parsed->beat_in_bar != expected_next) {
+            // Only a *sustained* disagreement is a real slip; a one-off is
+            // almost always a dropped beat packet and must not realign.
+            if (++bar_slip_count_ >= BAR_SLIP_REALIGN_THRESHOLD &&
+                !bar_slip_pending_realign_) {
+                bar_slip_pending_realign_ = true;
+                if (cfg_.verbose) {
+                    char msg[96];
+                    std::snprintf(msg, sizeof(msg),
+                                  "bar slip x%u (expected %u, got %u) — realign on next downbeat",
+                                  bar_slip_count_, expected_next, parsed->beat_in_bar);
+                    log(msg);
+                }
             }
+        } else {
+            bar_slip_count_ = 0;  // clean sequence — clear the slip confidence
         }
     }
     expected_beat_in_bar_ = parsed->beat_in_bar;
@@ -228,6 +243,7 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
         clock_.update_tempo_bpm(smoothed_bpm_);
         clock_.start();
         bar_slip_pending_realign_ = false;
+        bar_slip_count_ = 0;
         if (cfg_.verbose) log("realigned on downbeat (Stop+Start)");
         return;  // skip the soft phase correction; we just hard-reset
     }
@@ -314,6 +330,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
             waiting_for_downbeat_ = false;
             expected_beat_in_bar_ = 0;
             bar_slip_pending_realign_ = false;
+            bar_slip_count_ = 0;
             smoothed_bpm_ = 0.0f;   // reseed on next start
             clock_.stop();
             if (cfg_.verbose) log("stop (master paused)");
@@ -360,6 +377,7 @@ void Bridge::maybe_stop_on_silence(uint64_t t) {
     pending_play_state_  = false;
     expected_beat_in_bar_ = 0;
     bar_slip_pending_realign_ = false;
+    bar_slip_count_ = 0;
     smoothed_bpm_ = 0.0f;   // reseed on next start
     clock_.stop();
     if (cfg_.verbose) log("stop (silence timeout)");
