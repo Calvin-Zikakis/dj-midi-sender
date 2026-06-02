@@ -55,6 +55,16 @@ void Bridge::reset_grid_offset() {
     set_grid_offset_ms(0.0f);
 }
 
+void Bridge::set_force_master_device(uint8_t device_num) {
+    // Mirrors cfg.force_master_device but settable live (front-panel
+    // encoder). Storing current_master_ here makes the change take effect
+    // immediately: device_num==0 re-bootstraps auto-tracking from the next
+    // packet, non-zero pins to that device. The per-packet master logic
+    // re-reads cfg_.force_master_device, so a cross-task byte write is fine.
+    cfg_.force_master_device = device_num;
+    current_master_.store(device_num);
+}
+
 void Bridge::push_offset_to_clock_() {
     float total_ms = clock_offset_ms_.load() + grid_offset_ms_.load();
     clock_.set_offset_us(static_cast<int32_t>(total_ms * 1000.0f));

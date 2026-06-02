@@ -100,6 +100,12 @@ public:
     float grid_offset_ms()  const { return grid_offset_ms_.load(); }
     float total_offset_ms() const { return clock_offset_ms_.load() + grid_offset_ms_.load(); }
 
+    // Runtime clock-source selection (front-panel encoder). 0 = auto-track
+    // whoever holds the master flag; 1..6 = pin to that device number.
+    // Mirrors cfg.force_master_device but settable live.
+    void    set_force_master_device(uint8_t device_num);
+    uint8_t force_master_device() const { return cfg_.force_master_device; }
+
     // Per-packet counts since startup.
     uint64_t beat_packet_count()   const { return beat_count_.load(); }
     uint64_t status_packet_count() const { return status_count_.load(); }

@@ -12,6 +12,7 @@
 
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -32,6 +33,12 @@
 #include "midi_uart.hpp"
 #include "timer_esp.hpp"
 #include "udp_w5500.hpp"
+#include "ui_display.hpp"
+#include "ui_input.hpp"
+
+#ifdef DIAG_SERIAL_STUB
+#include <Wire.h>   // HW-I2C bus scan, OLED bring-up diagnostics only
+#endif
 
 namespace {
 
@@ -219,6 +226,23 @@ firmware::MidiUartStub g_midi;
 firmware::MidiHostUsb g_midi;
 #endif
 
+// ── Front-panel UI plumbing ────────────────────────────────────────────
+// The Bridge and Clock are constructed on bridge_task's stack and live for
+// the duration of run(); we publish pointers so the UI task can read live
+// state (lock-free getters) and drive the nudge/source controls. Null until
+// the bridge is up, and cleared if run() ever returns.
+std::atomic<prolink::Bridge*> g_bridge{nullptr};
+std::atomic<prolink::Clock*>  g_clock{nullptr};
+
+// Small bits the live objects don't expose: latest pitch %, the encoder's
+// source selection (0 = auto, 1..4), and a tapped BPM (display-only for now).
+std::atomic<float>   g_pitch_pct{0.0f};
+std::atomic<float>   g_tapped_bpm{0.0f};
+std::atomic<uint8_t> g_selected_src{0};
+
+// Per-press nudge of the persistent clock offset (latency compensation).
+constexpr float kNudgeStepMs = 1.0f;
+
 void bridge_task(void*) {
     // Don't start the Bridge until link is up — the keepalive sender
     // would otherwise burn cycles on send() attempts that go nowhere.
@@ -305,6 +329,9 @@ void bridge_task(void*) {
     static StatusTrack prev;
 
     cb.on_status = [](const prolink::StatusPacket& p) {
+        // Feed the OLED every packet (cheap), regardless of the log gate below.
+        g_pitch_pct.store(p.pitch_percent());
+
         const bool changed =
             !prev.have_prev ||
             prev.device_num != p.device_num ||
@@ -337,11 +364,123 @@ void bridge_task(void*) {
     prolink::Bridge bridge(beat_sock, status_sock, keepalive_sock,
                            clock, cfg, cb);
 
+    // Publish for the UI task now that both objects exist on this stack.
+    g_clock.store(&clock, std::memory_order_release);
+    g_bridge.store(&bridge, std::memory_order_release);
+
     printf("[bridge] starting — vCDJ device %u, broadcast %s\n",
            cfg.device_num, "169.254.255.255");
     bridge.run();   // blocks until stop()
     printf("[bridge] run() returned\n");
+
+    // These objects are about to go out of scope — stop the UI touching them.
+    g_bridge.store(nullptr, std::memory_order_release);
+    g_clock.store(nullptr, std::memory_order_release);
     vTaskDelete(nullptr);
+}
+
+#ifdef DIAG_SERIAL_STUB
+// Diagnostic only: scan the I2C bus on the OLED pins via hardware Wire and
+// print every device that ACKs. A blank OLED with a found 0x3C/0x3D means
+// the panel is wired/powered fine (software issue); no devices found means
+// power / ground / SDA-SCL wiring is the problem. Wire is released after so
+// U8g2's software-I2C can drive the same pins.
+void i2c_scan_diag() {
+    Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN);
+    printf("[i2c] scanning (SDA=%d SCL=%d)...\n", OLED_SDA_PIN, OLED_SCL_PIN);
+    int found = 0;
+    for (uint8_t addr = 1; addr < 127; ++addr) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            printf("[i2c]   device ACK at 0x%02X\n", addr);
+            ++found;
+        }
+    }
+    printf("[i2c] scan done — %d device(s) found\n", found);
+    Wire.end();
+}
+#endif
+
+// ── UI task ────────────────────────────────────────────────────────────
+// Drains encoder/button events, drives the nudge + source-select controls
+// against the live Bridge, and renders the OLED. Runs on Core 0 (away from
+// the clock-critical bridge/timer on Core 1); the SW-I2C full-frame refresh
+// is ~10 fps and yields to all timing-critical work.
+void ui_task(void*) {
+    firmware::ui_display_begin();
+#ifdef DIAG_SERIAL_STUB
+    printf("[ui] task running; ui_display_begin() returned\n");
+#endif
+
+    uint32_t tap_prev_ms  = 0;
+    float    tap_period_ms = 0.0f;
+
+    for (;;) {
+        const int32_t  steps = firmware::ui_input_take_encoder_steps();
+        const uint32_t btns  = firmware::ui_input_take_button_presses();
+        prolink::Bridge* b = g_bridge.load(std::memory_order_acquire);
+
+        // Encoder: cycle clock source auto(0) → 1 → 2 → 3 → 4 → auto.
+        if (steps != 0) {
+            int32_t v = (static_cast<int32_t>(g_selected_src.load()) + steps) % 5;
+            if (v < 0) v += 5;
+            g_selected_src.store(static_cast<uint8_t>(v));
+            if (b) b->set_force_master_device(static_cast<uint8_t>(v));
+#ifdef DIAG_SERIAL_STUB
+            printf("[ui] encoder steps=%ld -> src=%ld\n", (long)steps, (long)v);
+#endif
+        }
+#ifdef DIAG_SERIAL_STUB
+        if (btns) printf("[ui] buttons mask=0x%lx\n", (unsigned long)btns);
+#endif
+
+        // Buttons.
+        if (b && (btns & firmware::kBtnNudgeL)) b->adjust_clock_offset_ms(-kNudgeStepMs);
+        if (b && (btns & firmware::kBtnNudgeR)) b->adjust_clock_offset_ms(+kNudgeStepMs);
+        if (b && (btns & firmware::kBtnEncSw))  b->set_clock_offset_ms(0.0f);  // reset nudge
+        if (btns & firmware::kBtnTap) {
+            const uint32_t now = millis();
+            const uint32_t dt  = now - tap_prev_ms;
+            tap_prev_ms = now;
+            if (dt > 250 && dt < 2000) {  // 30..240 BPM window
+                tap_period_ms = (tap_period_ms <= 0.0f)
+                    ? static_cast<float>(dt)
+                    : tap_period_ms * 0.5f + static_cast<float>(dt) * 0.5f;
+                g_tapped_bpm.store(60000.0f / tap_period_ms);
+            } else {
+                tap_period_ms = 0.0f;  // gap too long/short — restart the series
+            }
+        }
+
+        // Snapshot live state for the display.
+        firmware::UiSnapshot s;
+        s.link_up = g_link_up;
+        prolink::Clock* c = g_clock.load(std::memory_order_acquire);
+        if (b && c) {
+            s.playing       = b->is_playing();
+            s.clock_running = c->is_running();
+            s.bpm           = c->current_bpm();
+            s.master_dev    = b->current_master_num();
+            s.beat_in_bar   = c->current_beat_in_bar();
+            s.offset_ms     = b->total_offset_ms();
+            s.phase_err_us  = c->current_phase_error_us();
+        }
+        s.selected_src = g_selected_src.load();
+        s.pitch_pct    = g_pitch_pct.load();
+        s.tapped_bpm   = g_tapped_bpm.load();
+#ifdef DIAG_SERIAL_STUB
+        s.usb_state = "diag";
+#else
+        switch (g_midi.host_state()) {
+            case firmware::MidiHostUsb::HostState::kReady:        s.usb_state = "rdy";   break;
+            case firmware::MidiHostUsb::HostState::kWaiting:      s.usb_state = "wait";  break;
+            case firmware::MidiHostUsb::HostState::kDeviceNoMidi: s.usb_state = "nomid"; break;
+            default:                                              s.usb_state = "off";   break;
+        }
+#endif
+        firmware::ui_display_render(s);
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
 }
 
 }  // namespace
@@ -374,7 +513,13 @@ void setup() {
     // survives. g_midi is a counter-only stub; clock bytes are tallied,
     // not transmitted. Everything before this is identical to production.
     printf("[diag] SERIAL STUB build — USB host NOT installed; console stays alive\n");
+    i2c_scan_diag();
 #endif
+
+    // Front-panel UI: input polling (encoder/buttons) + OLED, both on Core 0
+    // so the SW-I2C refresh never competes with the clock/bridge on Core 1.
+    firmware::ui_input_begin();
+    xTaskCreatePinnedToCore(ui_task, "ui", 4096, nullptr, 3, nullptr, 0);
 
     // Bridge task on Core 1 alongside the Arduino loop. 8 KB stack is
     // generous — keepalive packet build, parsers, and EMA math all live
