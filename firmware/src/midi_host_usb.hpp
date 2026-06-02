@@ -30,6 +30,17 @@ namespace firmware {
 
 class MidiHostUsb : public prolink::IMidiOut {
 public:
+    // Coarse host-side state, surfaced so the firmware can encode it onto
+    // the WS2812 LED — our only diagnostic channel once host mode kills the
+    // serial console. Distinguishes "nothing plugged in" from "device
+    // plugged in but it has no MIDI interface" from "ready".
+    enum class HostState : uint8_t {
+        kUninstalled = 0,  // begin() not called or failed to install driver
+        kWaiting,          // driver up, waiting for a device to be plugged in
+        kDeviceNoMidi,     // a device enumerated but exposed no MIDIStreaming interface
+        kReady,            // device enumerated, MIDI interface claimed
+    };
+
     MidiHostUsb() = default;
     ~MidiHostUsb() override;
     MidiHostUsb(const MidiHostUsb&) = delete;
@@ -47,6 +58,7 @@ public:
     // of dropping the clock cadence.
     void send_byte(uint8_t b) override;
 
+    HostState host_state()         const { return state_.load(); }
     bool     is_device_connected() const { return device_connected_.load(); }
     uint64_t bytes_queued()        const { return bytes_queued_.load(); }
     uint64_t bytes_sent()          const { return bytes_sent_.load(); }
@@ -99,6 +111,7 @@ private:
 
     std::atomic<bool>     device_connected_{false};
     std::atomic<bool>     installed_{false};
+    std::atomic<HostState> state_{HostState::kUninstalled};
 
     std::atomic<uint64_t> bytes_queued_{0};
     std::atomic<uint64_t> bytes_sent_{0};

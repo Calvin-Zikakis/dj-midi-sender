@@ -29,3 +29,12 @@ CONFIG_ETH_USE_SPI_ETHERNET=y
 CONFIG_ETH_SPI_ETHERNET_W5500=y
 CONFIG_ETH_SPI_ETHERNET_DM9051=n
 CONFIG_ETH_SPI_ETHERNET_KSZ8851SNL=n
+
+# USB host enumeration buffer. The default (256) is the max config-
+# descriptor size the IDF 4.4 hub driver will accept during enumeration
+# (hub.c ENUM_STAGE_CHECK_SHORT_CONFIG_DESC: wTotalLength > this → abort,
+# no NEW_DEV event). USB-MIDI synths (audio-control + MIDIStreaming + a
+# descriptor per jack; composite audio+MIDI devices like the OP-XY) exceed
+# 256 bytes and silently fail to enumerate. A USB mouse (~50 B) does not —
+# which is exactly the symptom we hit. Bump it so real devices enumerate.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048

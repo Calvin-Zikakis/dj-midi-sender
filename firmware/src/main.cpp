@@ -29,6 +29,7 @@
 #include "types.hpp"
 
 #include "midi_host_usb.hpp"
+#include "midi_uart.hpp"
 #include "timer_esp.hpp"
 #include "udp_w5500.hpp"
 
@@ -144,12 +145,56 @@ void init_ethernet() {
     printf("[eth] static IP %s/16, broadcast 169.254.255.255\n", kLocalIpStr);
 }
 
-// ── Onboard WS2812B status LED (GPIO4 per schematic) ───────────────────
+// ── Onboard WS2812B status LED ─────────────────────────────────────────
 // One pixel, GRB ordering, 800 kHz protocol. Acts as a downbeat indicator:
 // red on beat 1 of every bar, dim white on beats 2–4. With the USB console
 // going away once we switch to host mode, this is our only at-a-glance
 // "the box is locked to a master and clocking" signal.
+//
+// Schematic check (2026-06-01): the WS2812 DIN routes through two alternate
+// 0 Ω jumpers — R13 (0R/NC, default) → GP4, R15 (NC/0R) → GP21. Boards may
+// ship stuffed either way, so we drive BOTH pins with the same color; the
+// pin that isn't the LED just toggles a free, unused GPIO. (Pull-up R12 10K
+// to 3V3 sits on the data line.)
 Adafruit_NeoPixel g_pixel(1, BOARD_RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
+#ifdef BOARD_RGB_LED_PIN_ALT
+Adafruit_NeoPixel g_pixel_alt(1, BOARD_RGB_LED_PIN_ALT, NEO_GRB + NEO_KHZ800);
+#endif
+
+void led_begin() {
+    g_pixel.begin();
+#ifdef BOARD_RGB_LED_PIN_ALT
+    g_pixel_alt.begin();
+#endif
+}
+
+void led_set(uint32_t color) {
+    g_pixel.setPixelColor(0, color);
+    g_pixel.show();
+#ifdef BOARD_RGB_LED_PIN_ALT
+    g_pixel_alt.setPixelColor(0, color);
+    g_pixel_alt.show();
+#endif
+}
+
+#ifndef DIAG_SERIAL_STUB
+// USB host state → LED color. This is our only diagnostic channel in host
+// mode (serial is dead), so the colors are deliberately distinct:
+//   magenta = driver failed to install
+//   dim blue = installed, nothing enumerated (check VBUS / D± wiring)
+//   red      = a device enumerated but exposed no MIDI interface
+//   (green   = ready — handled by the beat callback, not here)
+uint32_t led_color_for_host_state(firmware::MidiHostUsb::HostState st) {
+    using HS = firmware::MidiHostUsb::HostState;
+    switch (st) {
+        case HS::kUninstalled:  return g_pixel.Color(80, 0, 80);
+        case HS::kWaiting:      return g_pixel.Color(0, 0, 60);
+        case HS::kDeviceNoMidi: return g_pixel.Color(120, 0, 0);
+        case HS::kReady:        return g_pixel.Color(0, 40, 0);
+    }
+    return 0;
+}
+#endif
 
 // ── Bridge task ────────────────────────────────────────────────────────
 // Holds the I/O implementations and the Clock, builds a BridgeConfig that
@@ -159,10 +204,20 @@ Adafruit_NeoPixel g_pixel(1, BOARD_RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 //
 // MidiHostUsb installs ESP-IDF's USB host driver in setup() and acts as a
 // USB MIDI host. The OP-XY (or any class-compliant USB MIDI device) plugs
-// into the USB-C jack as a peripheral. Note: this takes over the USB-OTG
+// into the USB-A jack as a peripheral. Note: this takes over the USB-OTG
 // peripheral and kills the USB-Serial-JTAG console; logs go nowhere until
 // a UART breakout is wired to GPIO43/44.
+//
+// DIAG_SERIAL_STUB build: swap the USB host for a counter-only stub and
+// (in setup) skip begin(), so the USB-OTG peripheral is never claimed and
+// the USB-Serial-JTAG console over USB-C stays alive. This isolates the
+// network→master→clock half of the pipeline for serial debugging without
+// the USB host in the way.
+#ifdef DIAG_SERIAL_STUB
+firmware::MidiUartStub g_midi;
+#else
 firmware::MidiHostUsb g_midi;
+#endif
 
 void bridge_task(void*) {
     // Don't start the Bridge until link is up — the keepalive sender
@@ -218,11 +273,20 @@ void bridge_task(void*) {
                p.effective_bpm(), p.pitch_percent(), p.beat_in_bar);
         // Downbeat = red, off-beats = dim white. Stays lit until the next
         // beat overwrites it, so a missed beat is also a missed LED kick.
-        const uint32_t color = (p.beat_in_bar == 1)
-            ? g_pixel.Color(255, 0, 0)
-            : g_pixel.Color(40, 40, 40);
-        g_pixel.setPixelColor(0, color);
-        g_pixel.show();
+#ifdef DIAG_SERIAL_STUB
+        // Diag: no USB host, so the LED is purely a beat indicator —
+        // red downbeat, dim white off-beats.
+        led_set((p.beat_in_bar == 1) ? g_pixel.Color(255, 0, 0)
+                                      : g_pixel.Color(40, 40, 40));
+#else
+        // Production: only let beats drive the LED once USB MIDI is ready
+        // (green flashes). Before that, loop() keeps the host-state color
+        // on the LED so we can see where enumeration is stuck.
+        if (g_midi.host_state() == firmware::MidiHostUsb::HostState::kReady) {
+            led_set((p.beat_in_bar == 1) ? g_pixel.Color(0, 255, 0)
+                                          : g_pixel.Color(0, 40, 0));
+        }
+#endif
     };
 
     // Status packets arrive at ~5 Hz — logging every one floods the console
@@ -289,12 +353,12 @@ void setup() {
     // Initialize the onboard WS2812B and flash a brief identity color so
     // we can tell at a glance that setup() ran (independent of network
     // state). Yellow until link comes up, then the beat callbacks take over.
-    g_pixel.begin();
-    g_pixel.setPixelColor(0, g_pixel.Color(60, 40, 0));
-    g_pixel.show();
+    led_begin();
+    led_set(g_pixel.Color(60, 40, 0));  // yellow: setup() ran
 
     init_ethernet();
 
+#ifndef DIAG_SERIAL_STUB
     // Install the USB host driver and spawn the host/client/sender tasks.
     // This takes over the USB-OTG peripheral and silences the USB-Serial-
     // JTAG console — anything printed after this line goes nowhere unless
@@ -303,9 +367,14 @@ void setup() {
         // Failure here means MIDI clocks won't go anywhere over USB. The
         // rest of the bridge still works (counters, LED, status logging
         // before the console died); we just don't clock anything.
-        g_pixel.setPixelColor(0, g_pixel.Color(80, 0, 80));  // magenta = host install failed
-        g_pixel.show();
+        led_set(g_pixel.Color(80, 0, 80));  // magenta = host install failed
     }
+#else
+    // Diagnostic build: USB host left uninstalled so the serial console
+    // survives. g_midi is a counter-only stub; clock bytes are tallied,
+    // not transmitted. Everything before this is identical to production.
+    printf("[diag] SERIAL STUB build — USB host NOT installed; console stays alive\n");
+#endif
 
     // Bridge task on Core 1 alongside the Arduino loop. 8 KB stack is
     // generous — keepalive packet build, parsers, and EMA math all live
@@ -316,8 +385,25 @@ void setup() {
 void loop() {
     static uint32_t last = 0;
     const uint32_t now = millis();
+
+#ifndef DIAG_SERIAL_STUB
+    // Reflect USB host state on the LED until a device is ready; once
+    // ready, the on_beat callback owns the LED with green beat flashes.
+    if (g_midi.host_state() != firmware::MidiHostUsb::HostState::kReady) {
+        led_set(led_color_for_host_state(g_midi.host_state()));
+    }
+#endif
+
     if (now - last >= 5000) {
         last = now;
+#ifdef DIAG_SERIAL_STUB
+        printf("[status] link=%s clocks=%llu starts=%llu stops=%llu bytes=%llu\n",
+               g_link_up ? "up" : "down",
+               g_midi.clock_ticks_sent(),
+               g_midi.start_messages(),
+               g_midi.stop_messages(),
+               g_midi.bytes_sent());
+#else
         printf("[status] link=%s usb_dev=%s clocks=%llu starts=%llu stops=%llu sent=%llu dropped=%llu\n",
                g_link_up ? "up" : "down",
                g_midi.is_device_connected() ? "attached" : "none",
@@ -326,6 +412,7 @@ void loop() {
                g_midi.stop_messages(),
                g_midi.bytes_sent(),
                g_midi.bytes_dropped());
+#endif
     }
     delay(100);
 }

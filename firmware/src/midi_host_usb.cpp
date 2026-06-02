@@ -127,7 +127,8 @@ bool MidiHostUsb::begin() {
         return false;
     }
 
-    printf("[usb-midi] host driver installed; waiting for device on USB-C\n");
+    state_.store(HostState::kWaiting);
+    printf("[usb-midi] host driver installed; waiting for device on USB-A\n");
     return true;
 }
 
@@ -225,6 +226,9 @@ void MidiHostUsb::on_device_connect(uint8_t dev_addr) {
         printf("[usb-midi] device at addr=%u doesn't expose a MIDIStreaming interface; closing\n", dev_addr);
         usb_host_device_close(client, dev);
         device_hdl_ = nullptr;
+        // A device enumerated but had no MIDI interface (or the claim
+        // failed) — distinct from "nothing plugged in" for LED diagnostics.
+        state_.store(HostState::kDeviceNoMidi);
         return;
     }
 
@@ -236,6 +240,7 @@ void MidiHostUsb::on_device_connect(uint8_t dev_addr) {
         usb_host_interface_release(client, dev, interface_num_);
         usb_host_device_close(client, dev);
         device_hdl_ = nullptr;
+        state_.store(HostState::kDeviceNoMidi);
         return;
     }
     xfer->device_handle      = dev;
@@ -253,6 +258,7 @@ void MidiHostUsb::on_device_connect(uint8_t dev_addr) {
     transfer_ = xfer;
 
     device_connected_.store(true);
+    state_.store(HostState::kReady);
     printf("[usb-midi] MIDI device attached (addr=%u, intf=%u, ep=0x%02x, mps=%u)\n",
            dev_addr, interface_num_, out_ep_addr_, out_ep_mps_);
 }
@@ -276,6 +282,7 @@ void MidiHostUsb::on_device_disconnect() {
     interface_num_  = 0xFF;
     out_ep_addr_    = 0x00;
     out_ep_mps_     = 0;
+    state_.store(HostState::kWaiting);
     printf("[usb-midi] device detached\n");
 }
 
