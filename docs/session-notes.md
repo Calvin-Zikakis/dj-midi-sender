@@ -170,7 +170,26 @@ to UART0 (`CONFIG_ESP_CONSOLE_UART_DEFAULT`); (b) **UDP-over-Ethernet logging**
 codes** above. For most network/clock debugging, just flash the `diag` build
 and watch USB-C serial.
 
+## Deferred feature ideas (brainstormed 2026-06-02, not yet built)
+
+Ordered roughly easy → hard. **Persistence and free-run are done** (see below).
+
+- **Manual BPM** — when free-running with no master, set tempo by hand. Planned
+  UX: **hold tap + turn the encoder**. Gated on the tap button being installed
+  *and* the encoder working. Pairs with free-run (v1 free-run just latches the
+  last master tempo, which is already useful).
+- **Settings menu on the OLED** — once the encoder is reliable: free-run on/off,
+  clock-source select, manual BPM, offset. Until then, button-combo + OLED.
+- **ESP as tempo master (CDJs sync to *us*)** — the big one, its own phase. Today
+  we only send a vCDJ *keep-alive* (just enough to unlock status packets). To
+  have CDJs sync to the box it would have to **broadcast beat packets with its
+  own grid and claim the tempo-master role** (Pro DJ Link has a documented
+  master-takeover handshake — real reverse-engineering work). Free-run + manual
+  BPM are its prerequisites, so build those first.
+
 ## Known issues / follow-ups
+- **Clock offset persists across reboots** (NVS, namespace `xdjbridge`, key
+  `clk_off_ms`, debounced ~2 s write). +30 ms is only the first-boot fallback.
 - **Clock jitter + OP-XY dropouts** — see Known bugs above (the two priorities).
 - **OLED: hardware I²C only.** SW I²C tripped the task watchdog (see What's
   working). If the screen ever goes blank + the board reboots, that's the
