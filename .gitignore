@@ -32,8 +32,11 @@ _deps/
 .piolibdeps/
 .vscode/extensions.json
 
-# Editor / IDE
-.vscode/
+# Editor / IDE — ignore personal .vscode bits, but track the shared
+# build/flash/run/debug configs (portable, ${workspaceFolder}-relative).
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
 .idea/
 *.swp
 *.swo

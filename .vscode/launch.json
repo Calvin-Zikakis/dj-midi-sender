@@ -1,0 +1,46 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "debug: bridge — live verbose + GUI",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/desktop/xdj_bridge",
+            "args": [
+                "--midi-port", "OP-XY",
+                "--visualize",
+                "--verbose"
+            ],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "lldb",
+            "externalConsole": false
+        },
+        {
+            "name": "debug: bridge — live verbose (no GUI)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/desktop/xdj_bridge",
+            "args": [
+                "--midi-port", "OP-XY",
+                "--verbose"
+            ],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "lldb",
+            "externalConsole": false
+        },
+        {
+            "name": "debug: bridge — beat-only (--no-vcdj)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/desktop/xdj_bridge",
+            "args": [
+                "--midi-port", "OP-XY",
+                "--no-vcdj",
+                "--verbose"
+            ],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "lldb",
+            "externalConsole": false
+        }
+    ]
+}
