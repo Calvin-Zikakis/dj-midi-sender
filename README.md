@@ -216,6 +216,21 @@ Gotchas (full list in [docs/session-notes.md](docs/session-notes.md)):
 Board pinout, the USB-host enumeration fix, and wiring notes are in
 [docs/xdj-midi-bridge-context-v4.md](docs/xdj-midi-bridge-context-v4.md).
 
+### Front-panel controls
+
+- **Nudge buttons** — tap to trim the clock offset ±1 ms (latency
+  compensation); **hold** to auto-repeat with acceleration for a fast sweep.
+  The offset is **persisted to NVS** (loaded on boot; +30 ms is the first-boot
+  fallback). Encoder push resets it to 0.
+- **Free-run mode** — **hold both nudge buttons ~1 s** to toggle (OLED shows
+  `FREE`/`SYNC`). In `FREE`, the box keeps clocking at the last tempo when the
+  master pauses or the link drops — "full hardware mode." Resets to `SYNC` on
+  boot. (Start it once from a real master playing; it only suppresses stops.)
+- **OLED** — BPM, pitch %, beat dots, PLAY/STOP, `FREE`/`SYNC`, master/source,
+  and the live offset.
+- **Encoder** (clock-source select) is wired but not yet functional — pending a
+  protoboard; see the handoff.
+
 ## Captures
 
 Two pcapng files in [captures/](captures/) verified against real XZ hardware:
@@ -247,11 +262,14 @@ you need the live XZ.
 - **Phase 2/3 — firmware:** ✅ running on a Waveshare ESP32-S3-ETH. Full pipeline
   on hardware: Ethernet → parse → dual-source PLL → 24 PPQN → USB MIDI host →
   OP-XY / Sub 25, both locking to the master's tempo and pitch.
-- **Phase 4 — front panel:** OLED status screen + nudge buttons (clock-offset
-  trim) working; EC11 encoder partially wired; DIN out + tap button pending.
-- **Open bugs:** residual clock jitter after the offset, and the OP-XY
-  occasionally stops playing — both filed with suspected causes in
-  [docs/session-notes.md](docs/session-notes.md).
+- **Phase 4 — front panel:** OLED status screen, nudge buttons (offset trim w/
+  hold-repeat), **persistent offset** (NVS), and **free-run mode** all working.
+  EC11 encoder partially wired; DIN out + tap button pending.
+- **Tuned for hardware:** drift-free timer + continuous-µs phase lock keep the
+  OP-XY tight across tempo (offset ~+30 ms, persisted); a dropped beat packet
+  no longer causes a false Stop+Start dropout.
+- **Next:** finish the encoder (protoboard), then manual BPM, an OLED settings
+  menu, and the big one — ESP as tempo master so CDJs sync *to* the box.
 
 [docs/session-notes.md](docs/session-notes.md) is the live handoff;
 [docs/phases.md](docs/phases.md) is the roadmap.
