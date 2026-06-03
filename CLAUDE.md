@@ -21,7 +21,13 @@ Doc map — what to touch for what:
 After updating, sanity-check that README + session-notes don't contradict the
 code or each other.
 
-**Keep the task list current.** The next-steps / TODO list and the "Deferred
+**Keep the run tasks current.** [`.vscode/tasks.json`](.vscode/tasks.json) holds
+the one-click build / flash / monitor / run configs (the `fw: *` tasks for
+firmware, the desktop bridge/replay tasks). Whenever a build, flash, monitor,
+run command, env, or port changes, update the matching task so the run tasks
+keep working.
+
+**Keep the task list current too.** The next-steps / TODO list and the "Deferred
 feature ideas" in [docs/session-notes.md](docs/session-notes.md) are this
 project's task tracker — as work progresses, tick off or remove finished items
 and add new follow-ups as they surface, so the handoff always reflects what's
