@@ -152,11 +152,14 @@ Sub 27 simultaneously clocks off the DIN jack.
 
 ## Phase 4 — Productization
 
-> **Status (2026-06-02):** started early — the **OLED** (HW-I²C status screen),
-> the **downbeat LED**, and **nudge buttons** (clock-offset trim) are wired and
-> working. The **EC11 encoder** is on a breadboard but not yet functional
-> (common/ground); **tap-tempo** and **DIN out** are pending. Two open bugs
-> (clock jitter, OP-XY dropouts) — see [session-notes.md](session-notes.md).
+> **Status (2026-06-02):** well underway — **OLED** (HW-I²C status screen),
+> **downbeat LED**, **nudge buttons** (offset trim with hold-repeat), **offset
+> persistence** (NVS), and **free-run mode** (hold both nudge buttons) are all
+> working. The earlier clock-jitter and OP-XY-dropout bugs are **fixed**
+> (drift-free timer + continuous-µs phase lock; bar-slip confidence counter).
+> The **EC11 encoder** is on a breadboard but not yet functional
+> (common/ground); **tap-tempo** and **DIN out** are pending. See
+> [session-notes.md](session-notes.md).
 
 - **Custom PCB** combining ESP32-S3 + W5500 + DIN buffer + USB-A host jack +
   power, replacing the modular dev boards.

@@ -265,6 +265,20 @@ phase alignment.
 faster phase lock, more jitter passthrough. Lower (`/32`) = smoother,
 slower to correct drift. Tune by ear with the OP-XY running.
 
+### Implementation refinement (2026-06-02): continuous-time phase
+
+The pseudocode above shows the original `correct_phase(beat_in_bar)`, which
+measured phase by the integer `tick_in_beat` index — i.e. resolved only to the
+nearest whole tick (~20 ms at 120 BPM), a real jitter source. The shipping
+clock instead uses `Clock::feed_beat()`: it timestamps tick 0 and the beat
+packet via `ITimer::now_us()` and computes the lead in **continuous
+microseconds**. Same intent (drive our tick-0 lead toward `offset_us`, which
+stays a constant ms lead → tempo-independent), far finer resolution. On the
+firmware the `esp_timer` shim (`TimerEsp`) also arms each tick to a cumulative
+absolute deadline so dispatch latency doesn't accumulate. `ms_next_beat` is
+parsed and reserved for a future predictive (jitter-rejecting) refinement but
+isn't steered on yet.
+
 ## Lead-time compensation (two-axis offset)
 
 The slave's first sound lags our tick by a chain of physical delays (USB

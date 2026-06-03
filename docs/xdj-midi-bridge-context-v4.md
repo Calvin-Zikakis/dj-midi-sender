@@ -25,12 +25,14 @@ handoff and the exact next steps. Summary:
   `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE` (default 256) — USB-MIDI synths
   blow past that, so it's bumped to 2048 in `sdkconfig.defaults`.
 - **Wired + working:** USB-A host jack, the **SSD1306 OLED** (HW I²C, live
-  status screen), and the **nudge buttons** (±1 ms clock-offset trim).
-  **Partially wired:** the **EC11 encoder** (on a flaky breadboard, common not
-  grounded — protoboard inbound). **Not yet wired:** DIN-5 MIDI out, the tap
-  button. (Pins reserved below.)
-- Known bugs (see [session-notes.md](session-notes.md)): residual **clock
-  jitter** even after the offset, and the **OP-XY occasionally stops playing**.
+  status screen), and the **nudge buttons** — offset trim with accelerating
+  hold-repeat, **persisted to NVS**, plus **free-run mode** (hold both nudge
+  buttons → keep clocking when the master stops). **Partially wired:** the
+  **EC11 encoder** (flaky breadboard, common not grounded — protoboard inbound).
+  **Not yet wired:** DIN-5 MIDI out, the tap button. (Pins reserved below.)
+- The earlier **clock-jitter and OP-XY-dropout bugs are fixed** (drift-free
+  timer + continuous-µs phase lock; bar-slip confidence counter). Offset sits
+  ~+30 ms and is tempo-independent. See [session-notes.md](session-notes.md).
 - The board is on header pins; peripherals will be connected with dupont jumpers for bring-up,
   then made permanent (likely a crimped dupont harness, not soldered-to-pin) once proven.
 
