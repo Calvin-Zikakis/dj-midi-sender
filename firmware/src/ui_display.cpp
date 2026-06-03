@@ -54,7 +54,8 @@ void ui_display_render(const UiSnapshot& s) {
         else                          g_oled.drawCircle(x, y, 3);
     }
     g_oled.setFont(u8g2_font_6x12_tr);
-    g_oled.drawStr(74, 34, s.playing ? "PLAY" : "STOP");
+    g_oled.drawStr(58, 34, s.playing ? "PLAY" : "STOP");
+    g_oled.drawStr(96, 34, s.free_run ? "FREE" : "SYNC");
 
     // ── Source select + active master ──────────────────────────────────
     if (s.selected_src == 0) snprintf(buf, sizeof buf, "src auto");

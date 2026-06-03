@@ -100,6 +100,11 @@ void TimerPosix::start(std::function<uint32_t()> on_tick) {
     });
 }
 
+uint64_t TimerPosix::now_us() const {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 void TimerPosix::stop() {
     if (!running_.exchange(false)) {
         if (thread_.joinable()) thread_.join();

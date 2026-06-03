@@ -248,7 +248,7 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
         return;  // skip the soft phase correction; we just hard-reset
     }
 
-    clock_.correct_phase(parsed->beat_in_bar);
+    clock_.feed_beat(parsed->ms_next_beat, parsed->beat_in_bar);
 }
 
 void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
@@ -324,8 +324,9 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     if (last_master_playing_ != pending_play_state_ &&
         (t - pending_play_change_ms_) >= cfg_.play_debounce_ms) {
         last_master_playing_ = pending_play_state_;
-        if (!last_master_playing_ && playing_.load()) {
-            // Playing → stopped: kill the clock immediately.
+        if (!last_master_playing_ && playing_.load() && !free_run_.load()) {
+            // Playing → stopped: kill the clock immediately. (Skipped in
+            // free-run: the clock latches the last tempo and keeps going.)
             playing_.store(false);
             waiting_for_downbeat_ = false;
             expected_beat_in_bar_ = 0;
@@ -370,6 +371,7 @@ void Bridge::maybe_send_keepalive(uint64_t t) {
 
 void Bridge::maybe_stop_on_silence(uint64_t t) {
     if (!playing_.load()) return;
+    if (free_run_.load()) return;  // keep clocking with no link in free-run mode
     if (t - last_packet_ms_ < cfg_.silence_timeout_ms) return;
     playing_.store(false);
     waiting_for_downbeat_ = false;

@@ -106,6 +106,13 @@ public:
     void    set_force_master_device(uint8_t device_num);
     uint8_t force_master_device() const { return cfg_.force_master_device; }
 
+    // Free-run mode. When enabled, the bridge does NOT stop the clock when the
+    // master pauses or the link goes silent — it latches the last tempo and
+    // keeps clocking ("full hardware mode"). It only suppresses stops; the
+    // clock must already have been started by a real master playing.
+    void set_free_run(bool on) { free_run_.store(on); }
+    bool free_run() const { return free_run_.load(); }
+
     // Per-packet counts since startup.
     uint64_t beat_packet_count()   const { return beat_count_.load(); }
     uint64_t status_packet_count() const { return status_count_.load(); }
@@ -131,6 +138,7 @@ private:
 
     std::atomic<bool>     running_{false};
     std::atomic<bool>     playing_{false};
+    std::atomic<bool>     free_run_{false};
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};

@@ -14,6 +14,10 @@ class ITimer {
 public:
     virtual void start(std::function<uint32_t()> on_tick) = 0;
     virtual void stop() = 0;
+    // Monotonic microsecond clock in the timer's own timebase. Used by Clock
+    // to timestamp tick emission and beat-packet arrivals for feed-forward
+    // phase locking, so it must be consistent with start()'s scheduling.
+    virtual uint64_t now_us() const = 0;
     virtual ~ITimer() = default;
 };
 
@@ -29,6 +33,11 @@ class IClockSink {
 public:
     virtual void update_tempo_bpm(float bpm) = 0;
     virtual void correct_phase(uint8_t beat_in_bar) = 0;
+    // Feed-forward phase lock from a Pro DJ Link beat packet. ms_to_next_beat
+    // is the master's predicted time until its next beat; beat_in_bar is 1..4.
+    // Continuous-time, so it supersedes correct_phase() (which resolves phase
+    // only to the nearest whole tick, ~20 ms at 120 BPM).
+    virtual void feed_beat(uint32_t ms_to_next_beat, uint8_t beat_in_bar) = 0;
     virtual void start() = 0;
     virtual void stop()  = 0;
 
@@ -57,6 +66,7 @@ public:
 
     void update_tempo_bpm(float bpm) override;
     void correct_phase(uint8_t beat_in_bar) override;
+    void feed_beat(uint32_t ms_to_next_beat, uint8_t beat_in_bar) override;
     void start() override;
     void stop()  override;
     void set_offset_us(int32_t offset_us) override;
@@ -81,6 +91,7 @@ private:
     std::atomic<uint32_t> tick_period_us_;
     std::atomic<int32_t>  phase_error_us_;
     std::atomic<int32_t>  offset_us_;        // lead-time compensation, signed
+    std::atomic<int64_t>  last_beat_anchor_us_;  // abs time (timer µs) of our last tick-0
     std::atomic<uint8_t>  tick_in_beat_;     // index of *next* tick to emit
     std::atomic<uint8_t>  beat_in_bar_;
     std::atomic<float>    current_bpm_;

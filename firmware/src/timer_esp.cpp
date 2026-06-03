@@ -65,6 +65,10 @@ void TimerEsp::start(std::function<uint32_t()> on_tick) {
     esp_timer_start_once(handle_, 1);
 }
 
+uint64_t TimerEsp::now_us() const {
+    return static_cast<uint64_t>(esp_timer_get_time());
+}
+
 void TimerEsp::stop() {
     if (running_.exchange(false)) {
         if (handle_) {

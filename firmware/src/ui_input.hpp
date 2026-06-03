@@ -10,11 +10,10 @@
 
 namespace firmware {
 
-// Bit flags returned by ui_input_take_button_presses().
+// Bit flags returned by ui_input_take_button_presses(). The nudge buttons are
+// NOT here — they auto-repeat, so they're drained as signed steps instead.
 enum ButtonBit : uint32_t {
     kBtnEncSw  = 1u << 0,  // encoder push
-    kBtnNudgeL = 1u << 1,  // nudge left  (clock earlier)
-    kBtnNudgeR = 1u << 2,  // nudge right (clock later)
     kBtnTap    = 1u << 3,  // tap tempo
 };
 
@@ -24,8 +23,17 @@ void ui_input_begin();
 // Net encoder detents since the last call (signed; +cw / −ccw). Cleared on read.
 int32_t ui_input_take_encoder_steps();
 
-// Bitmask (ButtonBit) of buttons that registered a fresh press since the last
-// call. Cleared on read.
+// Net nudge steps since the last call (signed; +right / −left), including
+// hold-to-repeat with acceleration: one step per press, then after a hold
+// delay it auto-repeats and speeds up. Cleared on read.
+int32_t ui_input_take_nudge_steps();
+
+// Count of free-run toggle events (both nudge buttons held ~1 s) since the
+// last call. Normally 0 or 1. Cleared on read.
+uint32_t ui_input_take_freerun_toggles();
+
+// Bitmask (ButtonBit) of single-press buttons (encoder push, tap) that
+// registered a fresh press since the last call. Cleared on read.
 uint32_t ui_input_take_button_presses();
 
 }  // namespace firmware

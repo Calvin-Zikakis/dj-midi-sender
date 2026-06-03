@@ -21,6 +21,8 @@
 #include "esp_eth.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -243,6 +245,45 @@ std::atomic<uint8_t> g_selected_src{0};
 // Per-press nudge of the persistent clock offset (latency compensation).
 constexpr float kNudgeStepMs = 1.0f;
 
+// Boot default for the clock offset (lead-time compensation for USB + OP-XY
+// latency). Measured by ear ~+30 ms. This is only the *first-boot fallback* —
+// once the user nudges and we persist to NVS, the saved value wins on boot.
+constexpr float kDefaultClockOffsetMs = 30.0f;
+
+// ── Clock-offset persistence (NVS) ─────────────────────────────────────
+// The nudged offset survives reboots. Stored as integer milliseconds (the
+// nudge step is 1 ms, so that's full resolution). Writes are debounced by the
+// UI task so we don't wear the flash on every button press.
+constexpr const char* kNvsNamespace = "xdjbridge";
+constexpr const char* kNvsKeyOffset = "clk_off_ms";
+
+void nvs_init_once() {
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+}
+
+// Load the saved offset, or `fallback` if nothing's stored yet.
+float nvs_load_offset_ms(float fallback) {
+    nvs_handle_t h;
+    if (nvs_open(kNvsNamespace, NVS_READONLY, &h) != ESP_OK) return fallback;
+    int32_t v = 0;
+    esp_err_t err = nvs_get_i32(h, kNvsKeyOffset, &v);
+    nvs_close(h);
+    return (err == ESP_OK) ? static_cast<float>(v) : fallback;
+}
+
+void nvs_save_offset_ms(float ms) {
+    nvs_handle_t h;
+    if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) return;
+    const int32_t rounded = static_cast<int32_t>(ms < 0.0f ? ms - 0.5f : ms + 0.5f);
+    nvs_set_i32(h, kNvsKeyOffset, rounded);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 void bridge_task(void*) {
     // Don't start the Bridge until link is up — the keepalive sender
     // would otherwise burn cycles on send() attempts that go nowhere.
@@ -363,6 +404,7 @@ void bridge_task(void*) {
 
     prolink::Bridge bridge(beat_sock, status_sock, keepalive_sock,
                            clock, cfg, cb);
+    bridge.set_clock_offset_ms(nvs_load_offset_ms(kDefaultClockOffsetMs));  // saved, else +30
 
     // Publish for the UI task now that both objects exist on this stack.
     g_clock.store(&clock, std::memory_order_release);
@@ -415,6 +457,12 @@ void ui_task(void*) {
     uint32_t tap_prev_ms  = 0;
     float    tap_period_ms = 0.0f;
 
+    // Debounced NVS persistence of the clock offset.
+    bool     save_init      = false;
+    float    save_seen      = 0.0f;  // last offset value observed
+    float    save_committed = 0.0f;  // last value written to NVS
+    uint32_t save_settle_ms = 0;
+
     for (;;) {
         const int32_t  steps = firmware::ui_input_take_encoder_steps();
         const uint32_t btns  = firmware::ui_input_take_button_presses();
@@ -434,10 +482,17 @@ void ui_task(void*) {
         if (btns) printf("[ui] buttons mask=0x%lx\n", (unsigned long)btns);
 #endif
 
-        // Buttons.
-        if (b && (btns & firmware::kBtnNudgeL)) b->adjust_clock_offset_ms(-kNudgeStepMs);
-        if (b && (btns & firmware::kBtnNudgeR)) b->adjust_clock_offset_ms(+kNudgeStepMs);
-        if (b && (btns & firmware::kBtnEncSw))  b->set_clock_offset_ms(0.0f);  // reset nudge
+        // Nudge buttons (signed steps, incl. accelerating hold-repeat).
+        const int32_t nudge = firmware::ui_input_take_nudge_steps();
+        if (b && nudge != 0) b->adjust_clock_offset_ms(static_cast<float>(nudge) * kNudgeStepMs);
+
+        // Free-run toggle (both nudge buttons held ~1 s).
+        if (b && firmware::ui_input_take_freerun_toggles() > 0) {
+            b->set_free_run(!b->free_run());
+        }
+
+        // Single-press buttons.
+        if (b && (btns & firmware::kBtnEncSw)) b->set_clock_offset_ms(0.0f);  // reset nudge
         if (btns & firmware::kBtnTap) {
             const uint32_t now = millis();
             const uint32_t dt  = now - tap_prev_ms;
@@ -452,12 +507,32 @@ void ui_task(void*) {
             }
         }
 
+        // Debounced persistence: write the offset to NVS ~2 s after it stops
+        // changing, so a burst of nudges (or a hold-repeat sweep) results in a
+        // single flash write. The boot value (loaded or default) seeds
+        // save_committed, so we never rewrite it on startup.
+        if (b) {
+            const float cur = b->clock_offset_ms();
+            if (!save_init) {
+                save_init = true;
+                save_seen = cur;
+                save_committed = cur;
+            } else if (cur != save_seen) {
+                save_seen = cur;
+                save_settle_ms = millis();
+            } else if (cur != save_committed && (millis() - save_settle_ms) >= 2000) {
+                nvs_save_offset_ms(cur);
+                save_committed = cur;
+            }
+        }
+
         // Snapshot live state for the display.
         firmware::UiSnapshot s;
         s.link_up = g_link_up;
         prolink::Clock* c = g_clock.load(std::memory_order_acquire);
         if (b && c) {
             s.playing       = b->is_playing();
+            s.free_run      = b->free_run();
             s.clock_running = c->is_running();
             s.bpm           = c->current_bpm();
             s.master_dev    = b->current_master_num();
@@ -488,6 +563,8 @@ void ui_task(void*) {
 void setup() {
     delay(500);
     printf("\n[xdj-bridge] firmware — full Bridge integration + USB MIDI host\n");
+
+    nvs_init_once();  // persisted clock offset; must precede bridge_task
 
     // Initialize the onboard WS2812B and flash a brief identity color so
     // we can tell at a glance that setup() ran (independent of network

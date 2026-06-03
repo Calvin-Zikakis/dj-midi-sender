@@ -13,6 +13,7 @@ struct UiSnapshot {
     bool        link_up       = false;
     bool        playing       = false;
     bool        clock_running = false;
+    bool        free_run      = false;
     float       bpm           = 0.0f;
     float       pitch_pct     = 0.0f;
     uint8_t     master_dev    = 0;     // device # currently driving the clock

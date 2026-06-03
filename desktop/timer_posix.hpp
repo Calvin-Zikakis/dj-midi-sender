@@ -22,6 +22,7 @@ public:
 
     void start(std::function<uint32_t()> on_tick) override;
     void stop() override;
+    uint64_t now_us() const override;
 
 private:
     std::atomic<bool>           running_{false};
