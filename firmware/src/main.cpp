@@ -242,8 +242,7 @@ std::atomic<float>   g_pitch_pct{0.0f};
 std::atomic<float>   g_tapped_bpm{0.0f};
 std::atomic<uint8_t> g_selected_src{0};
 
-// Per-press nudge of the persistent clock offset (latency compensation).
-constexpr float kNudgeStepMs = 1.0f;
+
 
 // Boot default for the clock offset (lead-time compensation for USB + OP-XY
 // latency). Measured by ear ~+30 ms. This is only the *first-boot fallback* —
@@ -254,8 +253,12 @@ constexpr float kDefaultClockOffsetMs = 30.0f;
 // The nudged offset survives reboots. Stored as integer milliseconds (the
 // nudge step is 1 ms, so that's full resolution). Writes are debounced by the
 // UI task so we don't wear the flash on every button press.
-constexpr const char* kNvsNamespace = "xdjbridge";
-constexpr const char* kNvsKeyOffset = "clk_off_ms";
+constexpr const char* kNvsNamespace  = "xdjbridge";
+constexpr const char* kNvsKeyOffset  = "clk_off_ms";
+constexpr const char* kNvsKeyMode       = "mode";     // free-run 0/1
+constexpr const char* kNvsKeyBpmStep    = "bpmstep";  // index into kBpmStepValues
+constexpr const char* kNvsKeyFineStep   = "finestep"; // index into kFineStepValues
+constexpr const char* kNvsKeyOffsetStep = "offstep";  // index into kOffsetStepValues
 
 void nvs_init_once() {
     esp_err_t err = nvs_flash_init();
@@ -280,6 +283,24 @@ void nvs_save_offset_ms(float ms) {
     if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) return;
     const int32_t rounded = static_cast<int32_t>(ms < 0.0f ? ms - 0.5f : ms + 0.5f);
     nvs_set_i32(h, kNvsKeyOffset, rounded);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// Generic i32 helpers for the menu settings (mode, BPM-step index).
+int32_t nvs_load_i32(const char* key, int32_t def) {
+    nvs_handle_t h;
+    if (nvs_open(kNvsNamespace, NVS_READONLY, &h) != ESP_OK) return def;
+    int32_t v = def;
+    esp_err_t err = nvs_get_i32(h, key, &v);
+    nvs_close(h);
+    return (err == ESP_OK) ? v : def;
+}
+
+void nvs_save_i32(const char* key, int32_t val) {
+    nvs_handle_t h;
+    if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_i32(h, key, val);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -405,6 +426,7 @@ void bridge_task(void*) {
     prolink::Bridge bridge(beat_sock, status_sock, keepalive_sock,
                            clock, cfg, cb);
     bridge.set_clock_offset_ms(nvs_load_offset_ms(kDefaultClockOffsetMs));  // saved, else +30
+    bridge.set_free_run(nvs_load_i32(kNvsKeyMode, 0) != 0);                 // restore Free/Sync
 
     // Publish for the UI task now that both objects exist on this stack.
     g_clock.store(&clock, std::memory_order_release);
@@ -454,8 +476,31 @@ void ui_task(void*) {
     printf("[ui] task running; ui_display_begin() returned\n");
 #endif
 
-    uint32_t tap_prev_ms  = 0;
-    float    tap_period_ms = 0.0f;
+    // Front-panel UI mode + menu state.
+    firmware::UiMode   ui_mode          = firmware::UiMode::kNormal;
+    uint8_t            proposed_src     = 0;
+    uint8_t            menu_index       = 0;
+    int32_t            edit_value       = 0;
+    uint32_t           mode_activity_ms = 0;
+    constexpr uint32_t kSourceSelectIdleMs = 5000;
+    constexpr uint32_t kMenuIdleMs         = 12000;
+
+    // Step settings (indices into the option arrays), persisted via the menu.
+    auto clamp_idx = [](int32_t v, int32_t n) { if (v < 0) v = 0; if (v >= n) v = n - 1; return v; };
+    uint8_t bpm_step_idx    = static_cast<uint8_t>(clamp_idx(
+        nvs_load_i32(kNvsKeyBpmStep, firmware::kBpmStepDefault), firmware::kBpmStepCount));
+    uint8_t fine_step_idx   = static_cast<uint8_t>(clamp_idx(
+        nvs_load_i32(kNvsKeyFineStep, firmware::kFineStepDefault), firmware::kFineStepCount));
+    uint8_t offset_step_idx = static_cast<uint8_t>(clamp_idx(
+        nvs_load_i32(kNvsKeyOffsetStep, firmware::kOffsetStepDefault), firmware::kOffsetStepCount));
+
+    // Classic tap-tempo state (Off / standalone source). Averages the last few
+    // tap intervals (ring buffer) for accuracy; a >2 s gap starts a new series.
+    constexpr uint8_t kTapAvgMax = 8;
+    uint32_t tap_prev_ms = 0;
+    float    tap_intervals[kTapAvgMax] = {0};
+    uint8_t  tap_count = 0;   // valid intervals stored (caps at kTapAvgMax)
+    uint8_t  tap_head  = 0;   // ring write index
 
     // Debounced NVS persistence of the clock offset.
     bool     save_init      = false;
@@ -464,46 +509,151 @@ void ui_task(void*) {
     uint32_t save_settle_ms = 0;
 
     for (;;) {
-        const int32_t  steps = firmware::ui_input_take_encoder_steps();
-        const uint32_t btns  = firmware::ui_input_take_button_presses();
+        const int32_t  steps       = firmware::ui_input_take_encoder_steps();
+        const uint32_t btns        = firmware::ui_input_take_button_presses();
+        const int32_t  nudge       = firmware::ui_input_take_nudge_steps();
+        const uint32_t freerun_tog = firmware::ui_input_take_freerun_toggles();
         prolink::Bridge* b = g_bridge.load(std::memory_order_acquire);
+        const uint32_t now = millis();
 
-        // Encoder: cycle clock source auto(0) → 1 → 2 → 3 → 4 → auto.
-        if (steps != 0) {
-            int32_t v = (static_cast<int32_t>(g_selected_src.load()) + steps) % 5;
-            if (v < 0) v += 5;
-            g_selected_src.store(static_cast<uint8_t>(v));
-            if (b) b->set_force_master_device(static_cast<uint8_t>(v));
 #ifdef DIAG_SERIAL_STUB
-            printf("[ui] encoder steps=%ld -> src=%ld\n", (long)steps, (long)v);
-#endif
-        }
-#ifdef DIAG_SERIAL_STUB
-        if (btns) printf("[ui] buttons mask=0x%lx\n", (unsigned long)btns);
+        if (steps) printf("[ui] encoder steps=%ld (mode=%d)\n", (long)steps, (int)ui_mode);
+        if (btns)  printf("[ui] buttons mask=0x%lx (mode=%d)\n", (unsigned long)btns, (int)ui_mode);
 #endif
 
-        // Nudge buttons (signed steps, incl. accelerating hold-repeat).
-        const int32_t nudge = firmware::ui_input_take_nudge_steps();
-        if (b && nudge != 0) b->adjust_clock_offset_ms(static_cast<float>(nudge) * kNudgeStepMs);
+        if (ui_mode == firmware::UiMode::kNormal) {
+            const bool  tap_held = firmware::ui_input_tap_held();
+            const bool  off_mode  = (g_selected_src.load() == firmware::kSourceOff);
+            const float bpm_step  = static_cast<float>(firmware::kBpmStepValues[bpm_step_idx]);
+            const float fine_step = static_cast<float>(firmware::kFineStepValues[fine_step_idx]);
 
-        // Free-run toggle (both nudge buttons held ~1 s).
-        if (b && firmware::ui_input_take_freerun_toggles() > 0) {
-            b->set_free_run(!b->free_run());
-        }
+            if (off_mode) {
+                // Standalone: plain spin fine-tunes BPM (Tap-fine step); tap =
+                // classic tap-tempo.
+                if (b && steps != 0) b->nudge_manual_bpm(static_cast<float>(steps) * fine_step);
+                if (btns & firmware::kBtnTap) {
+                    const uint32_t dt = now - tap_prev_ms;
+                    tap_prev_ms = now;
+                    if (dt > 250 && dt < 2000) {          // 30..240 BPM
+                        tap_intervals[tap_head] = static_cast<float>(dt);
+                        tap_head = (tap_head + 1) % kTapAvgMax;
+                        if (tap_count < kTapAvgMax) ++tap_count;
+                        float sum = 0.0f;
+                        for (uint8_t i = 0; i < tap_count; ++i) sum += tap_intervals[i];
+                        if (b && tap_count > 0) b->set_manual_bpm(60000.0f / (sum / tap_count));
+                    } else {
+                        tap_count = 0;                    // gap → start a new series
+                        tap_head  = 0;
+                    }
+                }
+            } else if (tap_held && steps != 0 && b && b->free_run()) {
+                // Player mode: hold tap + spin trims BPM in Free mode.
+                b->nudge_manual_bpm(static_cast<float>(steps) * bpm_step);
+            }
 
-        // Single-press buttons.
-        if (b && (btns & firmware::kBtnEncSw)) b->set_clock_offset_ms(0.0f);  // reset nudge
-        if (btns & firmware::kBtnTap) {
-            const uint32_t now = millis();
-            const uint32_t dt  = now - tap_prev_ms;
-            tap_prev_ms = now;
-            if (dt > 250 && dt < 2000) {  // 30..240 BPM window
-                tap_period_ms = (tap_period_ms <= 0.0f)
-                    ? static_cast<float>(dt)
-                    : tap_period_ms * 0.5f + static_cast<float>(dt) * 0.5f;
-                g_tapped_bpm.store(60000.0f / tap_period_ms);
-            } else {
-                tap_period_ms = 0.0f;  // gap too long/short — restart the series
+            // Nudge buttons → clock-offset trim (accelerating hold-repeat),
+            // by the menu-configured step.
+            if (b && nudge != 0)
+                b->adjust_clock_offset_ms(static_cast<float>(nudge) *
+                                          firmware::kOffsetStepValues[offset_step_idx]);
+            // Both nudges held → open the settings menu.
+            if (freerun_tog > 0) {
+                menu_index       = 0;
+                mode_activity_ms = now;
+                ui_mode          = firmware::UiMode::kMenu;
+            }
+            // Encoder push → enter source-select (not while tap is held — that's
+            // the player-mode BPM modifier).
+            if (!tap_held && (btns & firmware::kBtnEncSw)) {
+                proposed_src     = g_selected_src.load();
+                mode_activity_ms = now;
+                ui_mode          = firmware::UiMode::kSourceSelect;
+            }
+        } else if (ui_mode == firmware::UiMode::kSourceSelect) {
+            // Spin moves the proposed cursor; the active source stays put until
+            // we confirm.
+            if (steps != 0) {
+                int32_t v = (static_cast<int32_t>(proposed_src) + steps) % firmware::kSourceCount;
+                if (v < 0) v += firmware::kSourceCount;
+                proposed_src     = static_cast<uint8_t>(v);
+                mode_activity_ms = now;
+            }
+            if (btns & firmware::kBtnEncSw) {              // push = confirm
+                g_selected_src.store(proposed_src);
+                if (b) {
+                    if (proposed_src == firmware::kSourceOff) {
+                        b->set_ignore_master(true);        // standalone tempo
+                    } else {
+                        b->set_ignore_master(false);
+                        b->set_force_master_device(proposed_src);
+                    }
+                }
+                ui_mode = firmware::UiMode::kNormal;
+            } else if (btns & firmware::kBtnTap) {         // tap = cancel/back
+                ui_mode = firmware::UiMode::kNormal;
+            } else if (now - mode_activity_ms >= kSourceSelectIdleMs) {
+                ui_mode = firmware::UiMode::kNormal;        // idle auto-cancel
+            }
+        } else if (ui_mode == firmware::UiMode::kMenu) {
+            // Scroll items; push to edit the highlighted one; tap to exit.
+            if (steps != 0) {
+                int32_t v = (static_cast<int32_t>(menu_index) + steps) % firmware::kMenuItemCount;
+                if (v < 0) v += firmware::kMenuItemCount;
+                menu_index       = static_cast<uint8_t>(v);
+                mode_activity_ms = now;
+            }
+            if (btns & firmware::kBtnEncSw) {
+                if (menu_index == firmware::kMenuItemMode)
+                    edit_value = (b && b->free_run()) ? 1 : 0;
+                else if (menu_index == firmware::kMenuItemBpmStep)
+                    edit_value = bpm_step_idx;
+                else if (menu_index == firmware::kMenuItemFineStep)
+                    edit_value = fine_step_idx;
+                else
+                    edit_value = offset_step_idx;
+                mode_activity_ms = now;
+                ui_mode          = firmware::UiMode::kMenuEdit;
+            } else if (btns & firmware::kBtnTap) {
+                ui_mode = firmware::UiMode::kNormal;
+            } else if (now - mode_activity_ms >= kMenuIdleMs) {
+                ui_mode = firmware::UiMode::kNormal;
+            }
+        } else if (ui_mode == firmware::UiMode::kMenuEdit) {
+            // Spin changes the working value; push commits + saves; tap cancels.
+            if (steps != 0) {
+                if (menu_index == firmware::kMenuItemMode) {
+                    edit_value = ((edit_value + steps) % 2 + 2) % 2;   // Sync <-> Free
+                } else {
+                    const int32_t n = (menu_index == firmware::kMenuItemBpmStep)  ? firmware::kBpmStepCount
+                                    : (menu_index == firmware::kMenuItemFineStep) ? firmware::kFineStepCount
+                                                                                  : firmware::kOffsetStepCount;
+                    int32_t v = (edit_value + steps) % n;
+                    if (v < 0) v += n;
+                    edit_value = v;
+                }
+                mode_activity_ms = now;
+            }
+            if (btns & firmware::kBtnEncSw) {                  // confirm + persist
+                if (menu_index == firmware::kMenuItemMode) {
+                    if (b) b->set_free_run(edit_value != 0);
+                    nvs_save_i32(kNvsKeyMode, edit_value);
+                } else if (menu_index == firmware::kMenuItemBpmStep) {
+                    bpm_step_idx = static_cast<uint8_t>(edit_value);
+                    nvs_save_i32(kNvsKeyBpmStep, edit_value);
+                } else if (menu_index == firmware::kMenuItemFineStep) {
+                    fine_step_idx = static_cast<uint8_t>(edit_value);
+                    nvs_save_i32(kNvsKeyFineStep, edit_value);
+                } else {
+                    offset_step_idx = static_cast<uint8_t>(edit_value);
+                    nvs_save_i32(kNvsKeyOffsetStep, edit_value);
+                }
+                mode_activity_ms = now;
+                ui_mode          = firmware::UiMode::kMenu;
+            } else if (btns & firmware::kBtnTap) {             // cancel
+                mode_activity_ms = now;
+                ui_mode          = firmware::UiMode::kMenu;
+            } else if (now - mode_activity_ms >= kMenuIdleMs) {
+                ui_mode = firmware::UiMode::kNormal;
             }
         }
 
@@ -533,6 +683,8 @@ void ui_task(void*) {
         if (b && c) {
             s.playing       = b->is_playing();
             s.free_run      = b->free_run();
+            s.manual_bpm    = b->manual_tempo_active();
+            s.ignore_master = b->ignore_master();
             s.clock_running = c->is_running();
             s.bpm           = c->current_bpm();
             s.master_dev    = b->current_master_num();
@@ -541,6 +693,13 @@ void ui_task(void*) {
             s.phase_err_us  = c->current_phase_error_us();
         }
         s.selected_src = g_selected_src.load();
+        s.proposed_src = proposed_src;
+        s.ui_mode      = ui_mode;
+        s.menu_index      = menu_index;
+        s.menu_edit       = edit_value;
+        s.bpm_step_idx    = bpm_step_idx;
+        s.fine_step_idx   = fine_step_idx;
+        s.offset_step_idx = offset_step_idx;
         s.pitch_pct    = g_pitch_pct.load();
         s.tapped_bpm   = g_tapped_bpm.load();
 #ifdef DIAG_SERIAL_STUB

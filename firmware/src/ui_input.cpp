@@ -39,6 +39,7 @@ const uint8_t kTable[7][4] = {
 
 std::atomic<int32_t>  g_steps{0};
 std::atomic<uint32_t> g_presses{0};
+std::atomic<bool>     g_tap_held{false};
 uint8_t g_enc_state = R_START;
 
 struct Btn {
@@ -149,8 +150,10 @@ void poll_encoder() {
     const uint8_t pinstate = static_cast<uint8_t>((b << 1) | a);
     g_enc_state = kTable[g_enc_state & 0x0F][pinstate];
     const uint8_t dir = g_enc_state & 0x30;
-    if (dir == DIR_CW)       g_steps.fetch_add(1, std::memory_order_relaxed);
-    else if (dir == DIR_CCW) g_steps.fetch_sub(1, std::memory_order_relaxed);
+    // Direction is intentionally inverted from the raw quadrature so the knob
+    // scrolls the way the panel expects (matches the physical detent feel).
+    if (dir == DIR_CW)       g_steps.fetch_sub(1, std::memory_order_relaxed);
+    else if (dir == DIR_CCW) g_steps.fetch_add(1, std::memory_order_relaxed);
 }
 
 void poll_buttons(uint32_t now_ms) {
@@ -166,6 +169,9 @@ void poll_buttons(uint32_t now_ms) {
                 g_presses.fetch_or(btn.bit, std::memory_order_relaxed);
             }
         }
+        // Continuously expose the tap button's held state (LOW = held) for the
+        // hold-tap + spin BPM modifier.
+        if (btn.bit == kBtnTap) g_tap_held.store(!btn.stable, std::memory_order_relaxed);
     }
 }
 
@@ -219,6 +225,10 @@ int32_t ui_input_take_nudge_steps() {
 
 uint32_t ui_input_take_freerun_toggles() {
     return g_freerun_toggles.exchange(0, std::memory_order_relaxed);
+}
+
+bool ui_input_tap_held() {
+    return g_tap_held.load(std::memory_order_relaxed);
 }
 
 uint32_t ui_input_take_button_presses() {

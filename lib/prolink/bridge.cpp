@@ -72,6 +72,30 @@ void Bridge::set_force_master_device(uint8_t device_num) {
     current_master_.store(device_num);
 }
 
+void Bridge::set_manual_bpm(float bpm) {
+    // Thread-safe (called from the UI task): touches only atomics + the
+    // clock's atomic tempo. The bridge thread skips packet tempo while
+    // manual_active_ is set, and (unless ignoring) clears it on a master beat.
+    if (bpm < 20.0f)  bpm = 20.0f;
+    if (bpm > 300.0f) bpm = 300.0f;
+    manual_bpm_.store(bpm);
+    manual_active_.store(true);
+    last_known_bpm_.store(bpm);   // so the display reflects the manual tempo
+    clock_.update_tempo_bpm(bpm);
+}
+
+void Bridge::nudge_manual_bpm(float delta) {
+    float base = manual_active_.load() ? manual_bpm_.load() : last_known_bpm_.load();
+    set_manual_bpm(base + delta);
+}
+
+void Bridge::set_ignore_master(bool on) {
+    ignore_master_.store(on);
+    // Enabling forces the manual-tempo source (the run loop then cold-starts
+    // the clock); disabling resumes normal sync.
+    manual_active_.store(on);
+}
+
 void Bridge::push_offset_to_clock_() {
     float total_ms = clock_offset_ms_.load() + grid_offset_ms_.load();
     clock_.set_offset_us(static_cast<int32_t>(total_ms * 1000.0f));
@@ -79,6 +103,7 @@ void Bridge::push_offset_to_clock_() {
 
 void Bridge::apply_tempo_(float bpm) {
     if (bpm <= 0.0f) return;
+    if (manual_active_.load()) return;  // manual tempo latched — don't override
     float alpha = cfg_.bpm_smoothing_alpha;
     if (alpha <= 0.0f) alpha = 1.0f;
     if (alpha > 1.0f)  alpha = 1.0f;
@@ -110,6 +135,17 @@ void Bridge::run() {
         uint64_t t = now_ms();
         maybe_send_keepalive(t);
         maybe_stop_on_silence(t);
+
+        // Standalone / free-run cold-start: if the manual tempo is the source
+        // and nothing is running yet, start clocking (emits MIDI Start). Lets
+        // "Off" mode (and manual-BPM in free-run) drive a synth with no deck.
+        if ((free_run_.load() || ignore_master_.load()) &&
+            manual_active_.load() && !playing_.load()) {
+            playing_.store(true);
+            smoothed_bpm_ = manual_bpm_.load();
+            clock_.update_tempo_bpm(manual_bpm_.load());
+            clock_.start();
+        }
     }
 
     // Make sure the clock isn't left running after run() returns.
@@ -148,6 +184,10 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     }
 
     if (parsed->device_num != current_master_.load()) return;
+
+    // A master beat means it's playing again — drop any manual-tempo latch so
+    // we re-sync to the deck. (Not in ignore-players mode: there we never sync.)
+    if (!ignore_master_.load()) manual_active_.store(false);
 
     // Master-filtered. Fire callback so the GUI only sees the active deck —
     // not e.g. deck 2's idle status from a combined unit like the XDJ-XZ.
@@ -324,9 +364,10 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     if (last_master_playing_ != pending_play_state_ &&
         (t - pending_play_change_ms_) >= cfg_.play_debounce_ms) {
         last_master_playing_ = pending_play_state_;
-        if (!last_master_playing_ && playing_.load() && !free_run_.load()) {
+        if (!last_master_playing_ && playing_.load() &&
+            !free_run_.load() && !ignore_master_.load()) {
             // Playing → stopped: kill the clock immediately. (Skipped in
-            // free-run: the clock latches the last tempo and keeps going.)
+            // free-run / ignore: the clock keeps going on its latched tempo.)
             playing_.store(false);
             waiting_for_downbeat_ = false;
             expected_beat_in_bar_ = 0;
@@ -371,7 +412,7 @@ void Bridge::maybe_send_keepalive(uint64_t t) {
 
 void Bridge::maybe_stop_on_silence(uint64_t t) {
     if (!playing_.load()) return;
-    if (free_run_.load()) return;  // keep clocking with no link in free-run mode
+    if (free_run_.load() || ignore_master_.load()) return;  // keep clocking standalone
     if (t - last_packet_ms_ < cfg_.silence_timeout_ms) return;
     playing_.store(false);
     waiting_for_downbeat_ = false;

@@ -218,18 +218,33 @@ Board pinout, the USB-host enumeration fix, and wiring notes are in
 
 ### Front-panel controls
 
-- **Nudge buttons** — tap to trim the clock offset ±1 ms (latency
-  compensation); **hold** to auto-repeat with acceleration for a fast sweep.
-  The offset is **persisted to NVS** (loaded on boot; +30 ms is the first-boot
-  fallback). Encoder push resets it to 0.
-- **Free-run mode** — **hold both nudge buttons ~1 s** to toggle (OLED shows
-  `FREE`/`SYNC`). In `FREE`, the box keeps clocking at the last tempo when the
-  master pauses or the link drops — "full hardware mode." Resets to `SYNC` on
-  boot. (Start it once from a real master playing; it only suppresses stops.)
-- **OLED** — BPM, pitch %, beat dots, PLAY/STOP, `FREE`/`SYNC`, master/source,
-  and the live offset.
-- **Encoder** (clock-source select) is wired but not yet functional — pending a
-  protoboard; see the handoff.
+128×64 OLED, an EC11 encoder (rotate + push), three buttons (nudge −, nudge +,
+tap). The UI is a small mode machine — **Normal** status screen, **Source-select**,
+and a **Settings menu**.
+
+**Normal screen**
+- **Nudge − / +** — trim the clock offset by the configured *Offset step*;
+  **hold** to auto-repeat with acceleration. Offset persists to NVS (+30 ms
+  first-boot fallback).
+- **Encoder push** → Source-select. **Hold both nudges ~1 s** → Settings menu.
+
+**Source-select** (`mstr / P1–P4 / off`) — **spin** moves a `>` cursor (the
+active source stays put), **push** confirms, **tap** cancels. `mstr` follows the
+master deck; `P1–P4` pin a deck; **`off`** ignores all decks → standalone.
+
+**Standalone (`off`)** — no DJ-Link needed. The clock cold-starts on a manual
+tempo (OLED shows `OFF`). **Tap in rhythm** = tap-tempo (averages the last 8
+taps); **spin** = fine-tune by the *Tap-fine* step (default 0.1 BPM).
+
+**Free mode** (player source) — keeps clocking when the deck stops; **hold tap +
+spin** trims BPM live (`MAN`). A master beat re-syncs.
+
+**Settings menu** — spin to scroll, push to edit, spin to change, push to save,
+tap to back. All persisted to NVS: **Mode** (Sync/Free), **BPM step**
+(0.1/0.5/1/5), **Tap fine** (0.1/0.25/0.5/1), **Offset step** (0.1/0.5/1 ms).
+
+The **encoder direction** is inverted from the raw quadrature to match the
+panel feel ([ui_input.cpp](firmware/src/ui_input.cpp)).
 
 ## Captures
 
@@ -262,14 +277,15 @@ you need the live XZ.
 - **Phase 2/3 — firmware:** ✅ running on a Waveshare ESP32-S3-ETH. Full pipeline
   on hardware: Ethernet → parse → dual-source PLL → 24 PPQN → USB MIDI host →
   OP-XY / Sub 25, both locking to the master's tempo and pitch.
-- **Phase 4 — front panel:** OLED status screen, nudge buttons (offset trim w/
-  hold-repeat), **persistent offset** (NVS), and **free-run mode** all working.
-  EC11 encoder partially wired; DIN out + tap button pending.
+- **Phase 4 — front panel:** the full UI is working — OLED, EC11 encoder, and
+  buttons drive source-select, a persisted **settings menu**, offset trim,
+  free-run, and a **standalone tap-tempo mode** (`off` source). All settings
+  persist to NVS.
 - **Tuned for hardware:** drift-free timer + continuous-µs phase lock keep the
   OP-XY tight across tempo (offset ~+30 ms, persisted); a dropped beat packet
   no longer causes a false Stop+Start dropout.
-- **Next:** finish the encoder (protoboard), then manual BPM, an OLED settings
-  menu, and the big one — ESP as tempo master so CDJs sync *to* the box.
+- **Next:** DIN-5 MIDI out, then the big one — ESP as tempo master so CDJs sync
+  *to* the box (free-run + manual BPM are its building blocks).
 
 [docs/session-notes.md](docs/session-notes.md) is the live handoff;
 [docs/phases.md](docs/phases.md) is the roadmap.

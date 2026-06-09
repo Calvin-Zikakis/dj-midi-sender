@@ -24,12 +24,11 @@ handoff and the exact next steps. Summary:
   IDF 4.4 aborts enumeration if a device's config descriptor exceeds
   `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE` (default 256) — USB-MIDI synths
   blow past that, so it's bumped to 2048 in `sdkconfig.defaults`.
-- **Wired + working:** USB-A host jack, the **SSD1306 OLED** (HW I²C, live
-  status screen), and the **nudge buttons** — offset trim with accelerating
-  hold-repeat, **persisted to NVS**, plus **free-run mode** (hold both nudge
-  buttons → keep clocking when the master stops). **Partially wired:** the
-  **EC11 encoder** (flaky breadboard, common not grounded — protoboard inbound).
-  **Not yet wired:** DIN-5 MIDI out, the tap button. (Pins reserved below.)
+- **Wired + working:** USB-A host jack, the **SSD1306 OLED** (HW I²C), the
+  **nudge buttons** (offset trim), the **EC11 encoder**, and the **tap button**
+  — together driving the full front-panel UI: source-select (`mstr/P1–P4/off`),
+  an NVS-persisted settings menu, free-run, and standalone tap-tempo. **Not yet
+  wired:** DIN-5 MIDI out. (Pins reserved below.)
 - The earlier **clock-jitter and OP-XY-dropout bugs are fixed** (drift-free
   timer + continuous-µs phase lock; bar-slip confidence counter). Offset sits
   ~+30 ms and is tempo-independent. See [session-notes.md](session-notes.md).

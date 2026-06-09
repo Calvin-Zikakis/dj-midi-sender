@@ -32,6 +32,10 @@ int32_t ui_input_take_nudge_steps();
 // last call. Normally 0 or 1. Cleared on read.
 uint32_t ui_input_take_freerun_toggles();
 
+// True while the tap button is currently held down (for the hold-tap + spin
+// BPM modifier). Level, not an edge — not cleared on read.
+bool ui_input_tap_held();
+
 // Bitmask (ButtonBit) of single-press buttons (encoder push, tap) that
 // registered a fresh press since the last call. Cleared on read.
 uint32_t ui_input_take_button_presses();

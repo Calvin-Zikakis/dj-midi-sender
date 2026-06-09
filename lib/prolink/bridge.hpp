@@ -110,8 +110,25 @@ public:
     // master pauses or the link goes silent — it latches the last tempo and
     // keeps clocking ("full hardware mode"). It only suppresses stops; the
     // clock must already have been started by a real master playing.
-    void set_free_run(bool on) { free_run_.store(on); }
+    void set_free_run(bool on) { free_run_.store(on); if (!on) manual_active_.store(false); }
     bool free_run() const { return free_run_.load(); }
+
+    // Manual tempo (front-panel: hold-tap + spin in Free mode). Adjusts the
+    // running clock by `delta` BPM and latches it so packet tempo stops
+    // overriding — until a master beat arrives (it's playing again → re-sync).
+    // Only meaningful while the clock is already running (free-run latched).
+    void nudge_manual_bpm(float delta);
+    bool manual_tempo_active() const { return manual_active_.load(); }
+
+    // Ignore-players / standalone mode ("Off" source). The box clocks on its
+    // own manual tempo and ignores every deck — no sync, no auto-stop, and a
+    // master beat no longer pulls it back. The clock cold-starts when enabled.
+    void set_ignore_master(bool on);
+    bool ignore_master() const { return ignore_master_.load(); }
+
+    // Set the manual tempo absolutely (classic tap-tempo). nudge_manual_bpm()
+    // is the relative version (spin fine-tune).
+    void set_manual_bpm(float bpm);
 
     // Per-packet counts since startup.
     uint64_t beat_packet_count()   const { return beat_count_.load(); }
@@ -139,6 +156,9 @@ private:
     std::atomic<bool>     running_{false};
     std::atomic<bool>     playing_{false};
     std::atomic<bool>     free_run_{false};
+    std::atomic<bool>     ignore_master_{false};
+    std::atomic<bool>     manual_active_{false};
+    std::atomic<float>    manual_bpm_{120.0f};
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};

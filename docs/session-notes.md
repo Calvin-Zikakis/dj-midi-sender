@@ -7,7 +7,7 @@ Canonical references: [architecture.md](architecture.md) (protocol/PLL),
 (hardware addendum + pin map). When this doc disagrees with those on
 *hardware/build status*, this doc is newer.
 
-Last updated: **2026-06-02.**
+Last updated: **2026-06-08.**
 
 ## Where we are right now
 
@@ -31,6 +31,15 @@ reference/debug material.
   `[beat]`/`[stat]` flowing, `master=1`).
 - **USB MIDI host** — enumerates real class-compliant USB-MIDI devices and
   clocks them. See the enumeration fix below.
+- **Front-panel UI** (OLED + encoder + buttons) — a mode machine: Normal status,
+  **Source-select** (`mstr/P1–P4/off`, encoder push → spin `>` cursor → push to
+  confirm / tap cancel), and a **Settings menu** (hold both nudges; Mode
+  Sync/Free, BPM step, Tap-fine step, Offset step — all NVS-persisted). Offset
+  trim on the nudge buttons (configurable step + accelerating hold-repeat).
+- **Standalone tap-tempo** — the **`off`** source ignores all decks, cold-starts
+  the clock, and runs on a manual tempo: tap-the-rhythm tempo (averages the last
+  8 taps) + encoder spin to fine-tune. `MAN`/`OFF` shown on the OLED. In Free
+  mode, hold-tap + spin trims a synced/latched tempo; a master beat re-syncs.
 - **WS2812 status LED** as a downbeat indicator + USB-host-state diagnostic
   (legend below). This board's LED is on **GP21** (R15 stuffed); firmware
   drives both GP4 and GP21 so it's population-agnostic.
@@ -62,18 +71,14 @@ enumerate (stuck blue) but a mouse does, bump it higher (4096) first.
 - [x] **USB-A host jack** — D− → IO19, D+ → IO20, VBUS → board `VBUS`, GND → `GND`.
       Bench-verified; clocks the OP-XY / Sub 25.
 - [x] **SSD1306 OLED** (128×64) — SDA → IO15, SCL → IO16, VCC → 3V3, GND → GND. Working (HW I²C).
-- [x] **Nudge buttons** — IO38 (−), IO39 (+) → GND. Working.
-
-**Partially wired / not working:**
-- [ ] **EC11 rotary encoder** — A IO18, B IO2, push IO1. On a **breadboard with
-      spotty connections** right now; A/B/push all read stuck-HIGH (`steps=0`),
-      i.e. the **common/ground legs aren't reaching GND** (or wrong pin is
-      grounded — middle of the 3 is common). **Protoboard is in the mail**;
-      redo it there. Firmware is ready (the `diag` build prints a live raw-pin
-      dump + `[ui]` events to confirm). Note: if A/B end up swapped it just
-      counts backwards — a one-line firmware flip, not a rewire.
-- [ ] **Tap button** (IO40) — not installed yet. Firmware reads it (tap-tempo
-      computes a BPM) but it's not displayed or fed to the clock.
+- [x] **Nudge buttons** — IO38 (−), IO39 (+) → GND. Working (offset trim + menu).
+- [x] **EC11 rotary encoder** — A IO18, B IO2, push IO1 → GND common. **Working**
+      (on a protoboard now). Decode direction is inverted in firmware to match
+      the panel feel. Drives source-select, the settings menu, and standalone
+      BPM fine-tune.
+- [x] **Tap button** (IO40) → GND. **Working** — classic tap-tempo in `off`
+      mode (averages the last 8 taps); back/cancel in menus; hold-tap + spin =
+      manual BPM trim in Free mode.
 
 **Not wired yet** (pins reserved — see v4 pin map):
 - [ ] **DIN-5 MIDI out** — IO17 → 220 Ω → DIN pin 5 (Sub 25 was tested over
@@ -174,12 +179,12 @@ and watch USB-C serial.
 
 Ordered roughly easy → hard. **Persistence and free-run are done** (see below).
 
-- **Manual BPM** — when free-running with no master, set tempo by hand. Planned
-  UX: **hold tap + turn the encoder**. Gated on the tap button being installed
-  *and* the encoder working. Pairs with free-run (v1 free-run just latches the
-  last master tempo, which is already useful).
-- **Settings menu on the OLED** — once the encoder is reliable: free-run on/off,
-  clock-source select, manual BPM, offset. Until then, button-combo + OLED.
+- ✅ **Manual BPM** — DONE. Hold-tap+spin (Free mode) trims the latched tempo;
+  the `off` source is a full standalone tap-tempo + spin-fine-tune source.
+- ✅ **Settings menu on the OLED** — DONE. Mode (Sync/Free), BPM step, Tap-fine
+  step, Offset step — encoder-driven, NVS-persisted.
+- **DIN-5 MIDI out** (IO17 → 220 Ω → DIN 5) — still pending; lets the Sub 25
+  clock over DIN alongside USB. Both sinks share the one PLL tick.
 - **ESP as tempo master (CDJs sync to *us*)** — the big one, its own phase. Today
   we only send a vCDJ *keep-alive* (just enough to unlock status packets). To
   have CDJs sync to the box it would have to **broadcast beat packets with its
@@ -194,7 +199,9 @@ Ordered roughly easy → hard. **Persistence and free-run are done** (see below)
 - **OLED: hardware I²C only.** SW I²C tripped the task watchdog (see What's
   working). If the screen ever goes blank + the board reboots, that's the
   regression to check first.
-- **Encoder** on a breadboard, not yet functional — common/ground; protoboard inbound.
+- **Encoder + tap button** now working (on a protoboard). Settings (Mode, the
+  three step sizes) persist in NVS keys `mode` / `bpmstep` / `finestep` /
+  `offstep` under namespace `xdjbridge`.
 - **DIN MIDI out** not implemented (`MidiUart` sink + wiring).
 - **Diag instrumentation is in the tree** (all under `#ifdef DIAG_SERIAL_STUB`,
   zero cost in production): I²C bus scan at boot, a 2 Hz raw input-pin dump, and
