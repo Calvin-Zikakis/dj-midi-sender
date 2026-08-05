@@ -1,0 +1,49 @@
+name: Bug report
+description: Report something that is not working
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What went wrong, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: How to trigger it.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Where does it happen?
+      options:
+        - Firmware (ESP32-S3)
+        - Desktop bridge
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: gear
+    attributes:
+      label: Hardware / setup
+      description: Board, source device (e.g. XDJ-XZ), slave synth, build env, etc.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant serial output, clockmon readings, or build errors.
+      render: shell
+    validations:
+      required: false

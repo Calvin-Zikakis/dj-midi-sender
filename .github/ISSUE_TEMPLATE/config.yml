@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Roadmap
+    url: https://github.com/Calvin-Zikakis/dj-midi-sender/blob/main/ROADMAP.md
+    about: See what is done and what is planned before filing.
