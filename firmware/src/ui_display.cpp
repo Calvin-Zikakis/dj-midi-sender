@@ -139,8 +139,10 @@ void ui_display_render(const UiSnapshot& s) {
     }
     g_oled.setFont(u8g2_font_6x12_tr);
     g_oled.drawStr(58, 34, s.playing ? "PLAY" : "STOP");
-    // Mode tag: OFF = standalone; else FREE (MAN while manual-latched) / SYNC.
-    const char* mode_tag = s.ignore_master ? "OFF "
+    // Mode tag: RSYNC flashes briefly right after a re-sync tap; otherwise
+    // OFF = standalone; else FREE (MAN while manual-latched) / SYNC.
+    const char* mode_tag = s.resync_flash ? "RSYN"
+                         : s.ignore_master ? "OFF "
                          : s.free_run       ? (s.manual_bpm ? "MAN " : "FREE")
                                             : "SYNC";
     g_oled.drawStr(96, 34, mode_tag);

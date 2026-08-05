@@ -74,6 +74,14 @@
             "problemMatcher": []
         },
         {
+            "label": "run: clockmon — analyze DIN out (Scarlett)",
+            "type": "shell",
+            "command": "./build/desktop/xdj_clockmon --port 'Scarlett'",
+            "dependsOn": "build",
+            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "problemMatcher": []
+        },
+        {
             "label": "run: replay — pitch sweep (loop)",
             "type": "shell",
             "command": "./build/desktop/xdj_replay --file captures/xdj-xz-export-mode-pitch-sweep.pcapng --loop",

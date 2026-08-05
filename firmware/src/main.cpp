@@ -4,7 +4,7 @@
 // I/O implementations:
 //   - UdpW5500  : IUdpSocket  ← lwIP BSD sockets over the onboard W5500
 //   - TimerEsp  : ITimer      ← esp_timer hardware-timer one-shot loop
-//   - MidiUart… : IMidiOut    ← counter stub for now (HardwareSerial wiring next)
+//   - MidiFanOut: IMidiOut    ← one PLL, two outputs: USB MIDI host + DIN UART
 //
 // Ethernet bring-up is unchanged from the smoke test: W5500 over SPI, static
 // 169.254.42.42/16. Once link is up, a single FreeRTOS task constructs the
@@ -31,6 +31,7 @@
 #include "packets.hpp"
 #include "types.hpp"
 
+#include "midi_fanout.hpp"
 #include "midi_host_usb.hpp"
 #include "midi_uart.hpp"
 #include "timer_esp.hpp"
@@ -228,6 +229,17 @@ firmware::MidiUartStub g_midi;
 firmware::MidiHostUsb g_midi;
 #endif
 
+// DIN-5 MIDI out — UART1 TX on IO17 → 10 Ω → DIN pin 5 (3V3 → 47 Ω → pin 4).
+// Active in BOTH builds: UART1 is independent of the USB PHY, so the diag
+// build can validate the DIN jack with the serial console alive.
+firmware::MidiUart g_midi_din;
+
+// One PLL, two outputs. The Clock writes here; the fan-out forwards each
+// byte to the USB host (or diag stub) AND the DIN jack. Each sink is
+// non-blocking with its own drop counters, so DIN keeps clocking even with
+// no USB device attached (and vice versa).
+firmware::MidiFanOut g_midi_out(g_midi, g_midi_din);
+
 // ── Front-panel UI plumbing ────────────────────────────────────────────
 // The Bridge and Clock are constructed on bridge_task's stack and live for
 // the duration of run(); we publish pointers so the UI task can read live
@@ -337,10 +349,10 @@ void bridge_task(void*) {
     keepalive_sock.enable_broadcast();
 
     firmware::TimerEsp timer;
-    prolink::Clock clock(g_midi, timer, /* gain_divisor */ 16);
+    prolink::Clock clock(g_midi_out, timer, /* gain_divisor */ 16);
 
     prolink::BridgeConfig cfg;
-    cfg.device_num = 7;  // safe slot per docs/handoff.md (1–4 = decks, 5–6 = mixers)
+    cfg.device_num = 7;  // safe slot (1-4 = decks, 5-6 = mixers; see docs/architecture.md)
     std::strncpy(cfg.device_name, "xdj-bridge", sizeof(cfg.device_name) - 1);
     std::memcpy(cfg.mac, g_mac, 6);
     cfg.local_ip            = kLocalIpHost;
@@ -502,6 +514,15 @@ void ui_task(void*) {
     uint8_t  tap_count = 0;   // valid intervals stored (caps at kTapAvgMax)
     uint8_t  tap_head  = 0;   // ring write index
 
+    // Beat re-sync gesture (sync/free sources). A clean short tap-and-release
+    // with no spin = "realign the beat" (Bridge::request_resync). Tracked on
+    // release so it's distinguishable from the hold-tap+spin BPM modifier.
+    uint32_t tap_down_ms       = 0;
+    bool     tap_moved         = false;  // spun while tap held → it's the modifier
+    bool     prev_tap_held     = false;
+    uint32_t resync_flash_until = 0;      // OLED "RSYNC" confirmation window
+    constexpr uint32_t kTapMaxMs = 400;   // longer press = a hold, not a tap
+
     // Debounced NVS persistence of the clock offset.
     bool     save_init      = false;
     float    save_seen      = 0.0f;  // last offset value observed
@@ -515,6 +536,12 @@ void ui_task(void*) {
         const uint32_t freerun_tog = firmware::ui_input_take_freerun_toggles();
         prolink::Bridge* b = g_bridge.load(std::memory_order_acquire);
         const uint32_t now = millis();
+        const bool tap_held = firmware::ui_input_tap_held();
+
+        // Track the tap gesture across every mode so a clean short tap (no spin)
+        // can be recognized on release. Consumed only in Normal / non-off below.
+        if (btns & firmware::kBtnTap) { tap_down_ms = now; tap_moved = false; }
+        if (tap_held && steps != 0)   tap_moved = true;
 
 #ifdef DIAG_SERIAL_STUB
         if (steps) printf("[ui] encoder steps=%ld (mode=%d)\n", (long)steps, (int)ui_mode);
@@ -522,7 +549,6 @@ void ui_task(void*) {
 #endif
 
         if (ui_mode == firmware::UiMode::kNormal) {
-            const bool  tap_held = firmware::ui_input_tap_held();
             const bool  off_mode  = (g_selected_src.load() == firmware::kSourceOff);
             const float bpm_step  = static_cast<float>(firmware::kBpmStepValues[bpm_step_idx]);
             const float fine_step = static_cast<float>(firmware::kFineStepValues[fine_step_idx]);
@@ -546,9 +572,17 @@ void ui_task(void*) {
                         tap_head  = 0;
                     }
                 }
-            } else if (tap_held && steps != 0 && b && b->free_run()) {
+            } else {
                 // Player mode: hold tap + spin trims BPM in Free mode.
-                b->nudge_manual_bpm(static_cast<float>(steps) * bpm_step);
+                if (tap_held && steps != 0 && b && b->free_run())
+                    b->nudge_manual_bpm(static_cast<float>(steps) * bpm_step);
+                // Clean short tap released with no spin → beat re-sync. Free =
+                // restart now; Sync = realign on the master's next downbeat.
+                if (prev_tap_held && !tap_held && !tap_moved &&
+                    (now - tap_down_ms) < kTapMaxMs && b) {
+                    b->request_resync(b->free_run());
+                    resync_flash_until = now + 900;
+                }
             }
 
             // Nudge buttons → clock-offset trim (accelerating hold-repeat),
@@ -702,6 +736,7 @@ void ui_task(void*) {
         s.offset_step_idx = offset_step_idx;
         s.pitch_pct    = g_pitch_pct.load();
         s.tapped_bpm   = g_tapped_bpm.load();
+        s.resync_flash = (now < resync_flash_until);
 #ifdef DIAG_SERIAL_STUB
         s.usb_state = "diag";
 #else
@@ -713,6 +748,7 @@ void ui_task(void*) {
         }
 #endif
         firmware::ui_display_render(s);
+        prev_tap_held = tap_held;
         vTaskDelay(pdMS_TO_TICKS(40));
     }
 }
@@ -724,6 +760,28 @@ void setup() {
     printf("\n[xdj-bridge] firmware — full Bridge integration + USB MIDI host\n");
 
     nvs_init_once();  // persisted clock offset; must precede bridge_task
+
+#ifdef DIN_SELFTEST
+    // Flag-gated DIN jack self-test (PLATFORMIO_BUILD_FLAGS='-DDIN_SELFTEST').
+    // Blasts MIDI clock (0xF8) out the DIN jack at ~50/s (≈125 BPM) forever,
+    // through the *production* MidiUart path — no XZ or network needed. Point a
+    // MIDI-clock analyzer (desktop/xdj_clockmon) at the jack to prove the DIN
+    // wiring end-to-end. Never proceeds to normal boot. Zero cost in normal
+    // builds. (Used 2026-07-16 to confirm the jack after the pin-4/5 fix.)
+    g_midi_din.begin(MIDI_DIN_TX_PIN);
+    printf("[din-selftest] blasting 0xF8 @ 50/s out IO%d (~125 BPM) — no XZ needed\n",
+           MIDI_DIN_TX_PIN);
+    for (uint32_t n = 1;; ++n) {
+        g_midi_din.send_byte(0xF8);
+        if (n % 250 == 0) printf("[din-selftest] sent=%lu\n", (unsigned long)n);
+        delay(20);
+    }
+#endif
+
+    // DIN MIDI out. Bring up before the bridge task exists so TX idles high
+    // (MIDI "no current") from the start. On failure the sink stays inert —
+    // USB output is unaffected.
+    g_midi_din.begin(MIDI_DIN_TX_PIN);
 
     // Initialize the onboard WS2812B and flash a brief identity color so
     // we can tell at a glance that setup() ran (independent of network
@@ -778,21 +836,25 @@ void loop() {
     if (now - last >= 5000) {
         last = now;
 #ifdef DIAG_SERIAL_STUB
-        printf("[status] link=%s clocks=%llu starts=%llu stops=%llu bytes=%llu\n",
+        printf("[status] link=%s clocks=%llu starts=%llu stops=%llu bytes=%llu din=%llu/%llu\n",
                g_link_up ? "up" : "down",
                g_midi.clock_ticks_sent(),
                g_midi.start_messages(),
                g_midi.stop_messages(),
-               g_midi.bytes_sent());
+               g_midi.bytes_sent(),
+               g_midi_din.bytes_sent(),
+               g_midi_din.bytes_dropped());
 #else
-        printf("[status] link=%s usb_dev=%s clocks=%llu starts=%llu stops=%llu sent=%llu dropped=%llu\n",
+        printf("[status] link=%s usb_dev=%s clocks=%llu starts=%llu stops=%llu sent=%llu dropped=%llu din=%llu/%llu\n",
                g_link_up ? "up" : "down",
                g_midi.is_device_connected() ? "attached" : "none",
                g_midi.clock_ticks_sent(),
                g_midi.start_messages(),
                g_midi.stop_messages(),
                g_midi.bytes_sent(),
-               g_midi.bytes_dropped());
+               g_midi.bytes_dropped(),
+               g_midi_din.bytes_sent(),
+               g_midi_din.bytes_dropped());
 #endif
     }
     delay(100);

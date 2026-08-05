@@ -89,6 +89,13 @@ void Bridge::nudge_manual_bpm(float delta) {
     set_manual_bpm(base + delta);
 }
 
+void Bridge::request_resync(bool immediate) {
+    // Thread-safe: just latch the request. The bridge thread performs the
+    // Stop+Start — deferred requests on the next master downbeat (in
+    // handle_beat_packet), immediate ones in the run loop (maybe_resync).
+    resync_request_.store(immediate ? 2 : 1);
+}
+
 void Bridge::set_ignore_master(bool on) {
     ignore_master_.store(on);
     // Enabling forces the manual-tempo source (the run loop then cold-starts
@@ -135,6 +142,7 @@ void Bridge::run() {
         uint64_t t = now_ms();
         maybe_send_keepalive(t);
         maybe_stop_on_silence(t);
+        maybe_resync(t);
 
         // Standalone / free-run cold-start: if the manual tempo is the source
         // and nothing is running yet, start clocking (emits MIDI Start). Lets
@@ -276,7 +284,11 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     }
     expected_beat_in_bar_ = parsed->beat_in_bar;
 
-    if (bar_slip_pending_realign_ && parsed->beat_in_bar == 1) {
+    // A downbeat realign fires for either an auto-detected bar slip or a manual
+    // deferred re-sync request (front-panel tap). Both snap the slave's bar 1
+    // onto the master's bar 1 with a Stop+Start.
+    const bool resync_deferred = (resync_request_.load() == 1);
+    if ((bar_slip_pending_realign_ || resync_deferred) && parsed->beat_in_bar == 1) {
         clock_.stop();
         smoothed_bpm_ = parsed->effective_bpm();
         last_known_bpm_.store(smoothed_bpm_);
@@ -284,7 +296,9 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
         clock_.start();
         bar_slip_pending_realign_ = false;
         bar_slip_count_ = 0;
-        if (cfg_.verbose) log("realigned on downbeat (Stop+Start)");
+        resync_request_.store(0);
+        if (cfg_.verbose) log(resync_deferred ? "resync realign on downbeat (Stop+Start)"
+                                              : "realigned on downbeat (Stop+Start)");
         return;  // skip the soft phase correction; we just hard-reset
     }
 
@@ -424,6 +438,31 @@ void Bridge::maybe_stop_on_silence(uint64_t t) {
     smoothed_bpm_ = 0.0f;   // reseed on next start
     clock_.stop();
     if (cfg_.verbose) log("stop (silence timeout)");
+}
+
+void Bridge::maybe_resync(uint64_t t) {
+    const uint8_t req = resync_request_.load();
+    if (req == 0) return;
+    if (!playing_.load()) {          // nothing running to realign
+        resync_request_.store(0);
+        return;
+    }
+
+    // Deferred (==1) requests are handled on the master's next downbeat in
+    // handle_beat_packet — but only while master beats are actually arriving.
+    // If they've gone stale (standalone, or the master paused), fall through
+    // and restart now so the tap never feels dead.
+    const bool beats_live =
+        (last_packet_ms_ != 0) && (t - last_packet_ms_ < 750);
+    if (req == 1 && beats_live && !ignore_master_.load()) return;
+
+    // Immediate (==2), or a deferred request with no live master beats.
+    clock_.stop();
+    float bpm = last_known_bpm_.load();
+    if (bpm > 0.0f) clock_.update_tempo_bpm(bpm);
+    clock_.start();
+    resync_request_.store(0);
+    if (cfg_.verbose) log("resync (immediate Stop+Start)");
 }
 
 void Bridge::log(const char* msg) const {

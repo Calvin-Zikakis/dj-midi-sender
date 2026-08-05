@@ -130,6 +130,18 @@ public:
     // is the relative version (spin fine-tune).
     void set_manual_bpm(float bpm);
 
+    // Manual beat re-sync (front-panel tap). MIDI clock carries tempo but not
+    // bar position, so if a slave's transport is stopped/started locally it
+    // keeps the tempo but loses bar alignment with the master. This re-emits
+    // MIDI Stop+Start to snap the slave back to bar 1.
+    //   immediate == false (sync): defer the Stop+Start to the master's next
+    //     downbeat, so the slave's bar 1 realigns with the master's bar 1.
+    //   immediate == true (free/standalone): restart now (there's no master
+    //     downbeat to wait for).
+    // No-op unless the clock is already running.
+    void request_resync(bool immediate = false);
+    bool resync_pending() const { return resync_request_.load() != 0; }
+
     // Per-packet counts since startup.
     uint64_t beat_packet_count()   const { return beat_count_.load(); }
     uint64_t status_packet_count() const { return status_count_.load(); }
@@ -144,6 +156,7 @@ private:
     void handle_status_packet(const uint8_t* buf, size_t len);
     void maybe_send_keepalive(uint64_t now_ms);
     void maybe_stop_on_silence(uint64_t now_ms);
+    void maybe_resync(uint64_t now_ms);
     void log(const char* msg) const;
 
     IUdpSocket& beat_sock_;
@@ -159,6 +172,9 @@ private:
     std::atomic<bool>     ignore_master_{false};
     std::atomic<bool>     manual_active_{false};
     std::atomic<float>    manual_bpm_{120.0f};
+    // Manual re-sync request: 0 = none, 1 = deferred (on next master downbeat),
+    // 2 = immediate. Set from the UI task, consumed on the bridge thread.
+    std::atomic<uint8_t>  resync_request_{0};
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};

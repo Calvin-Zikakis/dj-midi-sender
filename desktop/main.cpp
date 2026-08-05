@@ -3,8 +3,7 @@
 // Listens on UDP 50001 (beat) and 50002 (status), announces a virtual CDJ on
 // UDP 50000 every 1500 ms, and emits 24 PPQN MIDI clock out the chosen MIDI
 // port. With --visualize, opens a Dear ImGui debug panel for live offset
-// tuning. See docs/architecture.md for protocol + clock design,
-// docs/phases.md for what counts as Phase 1 "done".
+// tuning. See docs/architecture.md for protocol + clock design.
 #include "bridge.hpp"
 #include "clock.hpp"
 #include "config_posix.hpp"

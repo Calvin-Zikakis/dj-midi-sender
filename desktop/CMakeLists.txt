@@ -154,3 +154,9 @@ target_link_libraries(xdj_bridge PRIVATE desktop_io prolink)
 add_executable(xdj_replay replay.cpp)
 target_link_libraries(xdj_replay PRIVATE prolink ${PCAP_LIBRARY})
 target_include_directories(xdj_replay PRIVATE ${PCAP_INCLUDE_DIR})
+
+# xdj_clockmon — MIDI clock INPUT analyzer. Validates the box's DIN/USB
+# clock through an audio interface's MIDI IN: derived BPM, per-tick jitter,
+# Start/Stop events.
+add_executable(xdj_clockmon clockmon.cpp)
+target_link_libraries(xdj_clockmon PRIVATE desktop_io prolink)

@@ -64,6 +64,7 @@ struct UiSnapshot {
     float       offset_ms     = 0.0f;  // total lead-time compensation
     int32_t     phase_err_us  = 0;
     float       tapped_bpm    = 0.0f;
+    bool        resync_flash  = false;  // brief "RSYNC" confirmation after a tap
     const char* usb_state     = "--";  // short tag: rdy/wait/nomid/off/diag
     UiMode      ui_mode       = UiMode::kNormal;
     uint8_t     proposed_src  = 0;     // source-select cursor (kSourceSelect only)
