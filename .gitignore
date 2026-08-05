@@ -52,6 +52,13 @@ _deps/
 .env.local
 config.local.*
 
+# Personal working notes / handoff docs (kept locally, not published).
+# Public docs live in README.md, ROADMAP.md, and docs/*.md.
+docs/local/
+
+# Dear ImGui persists window layout here — local UI state, not source.
+imgui.ini
+
 # Captures from live debugging (keep the canonical ones in captures/)
 *.pcap
 *.pcapng

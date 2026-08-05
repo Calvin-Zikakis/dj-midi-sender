@@ -1,9 +1,8 @@
 # Architecture
 
-> **Build/hardware status lives in [session-notes.md](session-notes.md)** (current
-> as of 2026-06-01: full pipeline working on the Waveshare ESP32-S3-ETH, USB-MIDI
-> host clocking a Sub 25 / OP-XY). This doc is the protocol/PLL reference and
-> stays accurate; it does not track day-to-day hardware state.
+> **Status and hardware:** see [../ROADMAP.md](../ROADMAP.md) for what is built
+> and [hardware.md](hardware.md) for the board and wiring. This doc is the
+> protocol/PLL reference and stays accurate; it does not track day-to-day state.
 
 This document captures the Pro DJ Link wire format, the dual-source clock
 design, and the C++ module boundaries. Everything below is verified
@@ -26,8 +25,8 @@ unsolicited. Status packets (port 50002) are different: they are sent
 | 50001 | XZ → broadcast | `0x28` beat packets           | one per beat    | always       |
 | 50002 | XZ → unicast   | `0x0A` status packets         | ~200 ms         | only after we announce a virtual CDJ |
 
-Source addressing observed: IP `169.254.182.222` (link-local), MAC
-`c8:3d:fc:0d:b6:de`; destination `169.254.255.255` for broadcast traffic.
+Source addressing observed: an RFC 3927 link-local IP (`169.254.0.0/16`) and
+the mixer's hardware MAC; destination `169.254.255.255` for broadcast traffic.
 
 ### Mode requirements
 
@@ -209,6 +208,23 @@ so tempo follows the slider continuously.
 reference — it fires from status packet `Pitch1` updates multiple times
 per second during a sweep. Beat arrivals only trigger phase correction.
 
+```mermaid
+flowchart TD
+    KA["keep-alive sender -> broadcast :50000 every 1500 ms"]
+    ST["status receiver :50002"]
+    BT["beat receiver :50001"]
+    ST -->|"Pitch1, BPM, flags, Mv"| MT["master tracking"]
+    MT -->|"if master and playing and Mv ok"| UT["clock.update_tempo(bpm x pitch1)"]
+    ST -->|"play/stop transition"| SS["clock.start / clock.stop"]
+    BT -->|"if master device"| CP["clock.feed_beat (phase only)"]
+    UT --> CLK["Clock engine (24 PPQN)"]
+    SS --> CLK
+    CP --> CLK
+    CLK -->|"0xF8 ticks"| OUT["MidiFanOut -> USB host + DIN"]
+```
+
+The pseudocode below shows the same flow in detail.
+
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Network thread                                                  │
@@ -348,6 +364,23 @@ CDJ status streams.
 
 Restart after a stop is a fresh `Start` on the next downbeat — no MIDI
 **Continue** is used.
+
+### Manual re-sync
+
+MIDI clock carries tempo but not bar position, so a slave whose transport is
+stopped/started from its own front panel keeps the tempo but loses bar
+alignment with the master. `Bridge::request_resync()` (front-panel tap)
+re-emits a Stop+Start to snap it back:
+
+- **Deferred (sync mode):** the Stop+Start fires on the master's next downbeat
+  (`beat_in_bar == 1`), reusing the bar-slip realign path, so the slave's bar 1
+  realigns with the master's.
+- **Immediate (free/standalone, or when no master beats are arriving):** the
+  Stop+Start fires right away, since there is no master downbeat to wait for.
+
+The request is a small atomic set from the UI thread and consumed on the bridge
+thread — deferred requests in `handle_beat_packet`, immediate ones in the run
+loop (`maybe_resync`).
 
 ## Module boundaries — lib/prolink
 

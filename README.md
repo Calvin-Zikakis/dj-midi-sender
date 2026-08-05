@@ -1,40 +1,54 @@
 # dj-midi-sender
 
 Standalone bridge that turns a Pioneer XDJ-XZ's Pro DJ Link Ethernet broadcast
-into rock-solid MIDI clock with continuous tempo tracking. End-state hardware
-is an **ESP32-S3 + W5500** box with a USB MIDI host jack (and a planned 5-pin
-DIN output) — no laptop in the signal chain.
+into rock-solid MIDI clock with continuous tempo tracking. The hardware is an
+**ESP32-S3 + W5500** box with both a **USB MIDI host jack** and a **5-pin DIN
+output** — no laptop in the signal chain.
 
-**It runs on real hardware today:** a Waveshare ESP32-S3-ETH clocks a
-**Teenage Engineering OP-XY** and a **Moog Sub 25** over USB, both plugged into
-the box's USB-A host jack and locked to the XZ's tempo. (Phase 1 also drove the
-OP-XY directly from a Mac over CoreMIDI/RtMidi — still useful for protocol
-debugging; see below.)
+It runs on real hardware today: a Waveshare ESP32-S3-ETH clocks class-compliant
+USB MIDI synths (plugged into the box's USB-A host jack) and a DIN synth
+simultaneously, all locked to the deck's tempo and following pitch-fader moves.
+The desktop binary drives the same core over a Mac's MIDI stack and remains a
+useful reference and protocol-debugging tool.
 
-Slave targets:
+Outputs:
 
-- **OP-XY** and **Moog Sub 25** via **USB MIDI** — the box is the USB host;
-  both enumerate on the USB-A jack. ✅ working
-- **5-pin DIN** out (IO17 → 220 Ω → DIN pin 5) — planned, not yet wired/coded.
+- **USB MIDI** — the box is the USB host; class-compliant devices enumerate on
+  the USB-A jack. Working.
+- **5-pin DIN** out (data: IO17 -> 10 Ohm -> DIN pin 5; power: 3V3 -> 47 Ohm ->
+  DIN pin 4) — UART1 fan-out alongside USB, both driven from the one clock.
+  Working. See [docs/hardware.md](docs/hardware.md) for full wiring.
 
 The XDJ-XZ has no native MIDI clock output. Pro DJ Link over Ethernet is the
 only extraction path.
 
-## Architecture in one paragraph
+## How it works
 
-Pioneer broadcasts two relevant packet types on the link:
-**beat packets** (port 50001, one per beat) and **status packets**
-(port 50002, ~5 Hz). Beat packets stream natively; status packets only flow
-once we announce ourselves as a virtual CDJ on port 50000. Tempo is taken
-from status packets (so pitch-slider sweeps follow within ~200 ms instead of
-~500 ms), and beat packets are used only to nudge phase. A 24 PPQN clock is
-generated on a hardware timer (desktop: `std::thread`; firmware: a native
-ESP-IDF `esp_timer` one-shot shim — uClock was dropped due to an arduino-esp32
-v2/v3 timer-API mismatch).
+```mermaid
+flowchart LR
+    XZ["XDJ-XZ"] -->|"Pro DJ Link (Ethernet)"| W5500["W5500 PHY"]
+    W5500 -->|SPI| ESP["ESP32-S3"]
+    subgraph BOX["The box (lib/prolink core)"]
+        ESP --> PARSE["parse beat + status packets"]
+        PARSE --> PLL["dual-source PLL, 24 PPQN clock"]
+    end
+    PLL --> USB["USB MIDI host jack"]
+    PLL --> DIN["5-pin DIN out"]
+    USB --> S1["USB synth"]
+    DIN --> S2["DIN synth"]
+```
 
-See [docs/architecture.md](docs/architecture.md) for protocol details,
-field offsets, and PLL design. See [docs/phases.md](docs/phases.md) for the
-roadmap from Phase 1 (desktop binary) to Phase 4 (custom enclosure).
+Pioneer broadcasts two relevant packet types on the link: **beat packets**
+(port 50001, one per beat) and **status packets** (port 50002, ~5 Hz). Beat
+packets stream natively; status packets only flow once the bridge announces
+itself as a virtual CDJ on port 50000. Tempo is taken from status packets (so
+pitch-slider sweeps follow within ~200 ms instead of ~500 ms), and beat packets
+nudge phase. A 24 PPQN clock is generated on a hardware timer (desktop:
+`std::thread`; firmware: a native ESP-IDF `esp_timer` one-shot shim).
+
+See [docs/architecture.md](docs/architecture.md) for protocol details, field
+offsets, and PLL design; [docs/hardware.md](docs/hardware.md) for the board and
+wiring; and [ROADMAP.md](ROADMAP.md) for status and what is next.
 
 ## Repo layout
 
@@ -52,7 +66,8 @@ dj-midi-sender/
 │   ├── midi_rtmidi.hpp/.cpp    # RtMidi MIDI output
 │   ├── timer_posix.hpp/.cpp    # std::thread-based ITimer
 │   ├── main.cpp                # xdj_bridge entry point
-│   └── replay.cpp              # xdj_replay — pcapng playback for offline dev
+│   ├── replay.cpp              # xdj_replay — pcapng playback for offline dev
+│   └── clockmon.cpp            # xdj_clockmon — MIDI-clock input analyzer (BPM/jitter)
 ├── firmware/                   # Phase 2/3/4 — Waveshare ESP32-S3-ETH (built; runs on hardware)
 │   ├── platformio.ini          # envs: waveshare_esp32s3_eth (prod) + diag (serial debug)
 │   ├── sdkconfig.defaults      # IDF config: W5500 SPI, USB host, 16 MB flash / PSRAM
@@ -60,11 +75,13 @@ dj-midi-sender/
 │       ├── udp_w5500.*         # IUdpSocket — lwIP over the onboard W5500
 │       ├── timer_esp.*         # ITimer — esp_timer one-shot
 │       ├── midi_host_usb.*     # IMidiOut — native USB MIDI host (esp_usb_host)
+│       ├── midi_uart.*         # IMidiOut — DIN-5 out (UART1 @ 31250) + diag stub
+│       ├── midi_fanout.hpp     # IMidiOut — one PLL tick → USB + DIN sinks
 │       ├── ui_display.*        # SSD1306 status screen (U8g2, hardware I2C)
 │       ├── ui_input.*          # EC11 encoder + nudge/tap buttons
 │       └── main.cpp            # ethernet bring-up + wiring it all together
 ├── captures/                   # canonical pcapng captures for offline replay
-└── docs/                       # architecture, phases, session-notes (live handoff), v3/v4 context
+└── docs/                       # architecture (protocol/PLL) + hardware (board/wiring)
 ```
 
 `lib/prolink/` is pure C++17 with no platform headers beyond `<cstdint>`,
@@ -92,10 +109,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-Two binaries land in `build/desktop/`:
+Three binaries land in `build/desktop/`:
 
 - `xdj_bridge` — listens on the link and sends MIDI clock
 - `xdj_replay` — replays a pcapng capture to localhost (offline dev loop)
+- `xdj_clockmon` — MIDI-clock **input** analyzer: point a MIDI OUT (the box's
+  DIN, or any port) at a MIDI IN and it prints derived BPM, per-tick jitter,
+  and Start/Stop events. Built to validate the DIN output quantitatively.
+  `xdj_clockmon --list` to see input ports; `--port "<name>" [--seconds N]`.
 
 ## Running
 
@@ -203,7 +224,7 @@ pio run -e diag -t upload --upload-port /dev/cu.usbmodemXXXX
 pio device monitor -e diag
 ```
 
-Gotchas (full list in [docs/session-notes.md](docs/session-notes.md)):
+Gotchas (full list in [docs/hardware.md](docs/hardware.md)):
 
 - **No serial in host mode.** USB-Serial-JTAG and USB-OTG share one PHY, so the
   production build's console is dead — status shows on the OLED and the RGB LED
@@ -213,8 +234,8 @@ Gotchas (full list in [docs/session-notes.md](docs/session-notes.md)):
 - **Power rule:** with a synth in the USB-A jack, power from a charger/wall, not
   a computer — two hosts on the shared IO19/20 lines conflict.
 
-Board pinout, the USB-host enumeration fix, and wiring notes are in
-[docs/xdj-midi-bridge-context-v4.md](docs/xdj-midi-bridge-context-v4.md).
+Board pinout, wiring, the USB-host enumeration fix, and the DIN pin-4/5 wiring
+trap are in [docs/hardware.md](docs/hardware.md).
 
 ### Front-panel controls
 
@@ -223,14 +244,18 @@ tap). The UI is a small mode machine — **Normal** status screen, **Source-sele
 and a **Settings menu**.
 
 **Normal screen**
-- **Nudge − / +** — trim the clock offset by the configured *Offset step*;
+- **Nudge - / +** — trim the clock offset by the configured *Offset step*;
   **hold** to auto-repeat with acceleration. Offset persists to NVS (+30 ms
   first-boot fallback).
-- **Encoder push** → Source-select. **Hold both nudges ~1 s** → Settings menu.
+- **Tap** (in Sync/Free) — **beat re-sync**: re-emits MIDI Start so a slave
+  whose transport was stopped/started locally snaps back to bar alignment. In
+  Sync it lands on the master's next downbeat; in Free it restarts immediately.
+  OLED flashes `RSYN`.
+- **Encoder push** -> Source-select. **Hold both nudges ~1 s** -> Settings menu.
 
-**Source-select** (`mstr / P1–P4 / off`) — **spin** moves a `>` cursor (the
+**Source-select** (`mstr / P1-P4 / off`) — **spin** moves a `>` cursor (the
 active source stays put), **push** confirms, **tap** cancels. `mstr` follows the
-master deck; `P1–P4` pin a deck; **`off`** ignores all decks → standalone.
+master deck; `P1-P4` pin a deck; **`off`** ignores all decks -> standalone.
 
 **Standalone (`off`)** — no DJ-Link needed. The clock cold-starts on a manual
 tempo (OLED shows `OFF`). **Tap in rhythm** = tap-tempo (averages the last 8
@@ -273,23 +298,29 @@ you need the live XZ.
 
 ## Status
 
-- **Phase 1 — desktop binary:** ✅ done, validated live against the XZ.
-- **Phase 2/3 — firmware:** ✅ running on a Waveshare ESP32-S3-ETH. Full pipeline
-  on hardware: Ethernet → parse → dual-source PLL → 24 PPQN → USB MIDI host →
-  OP-XY / Sub 25, both locking to the master's tempo and pitch.
-- **Phase 4 — front panel:** the full UI is working — OLED, EC11 encoder, and
-  buttons drive source-select, a persisted **settings menu**, offset trim,
-  free-run, and a **standalone tap-tempo mode** (`off` source). All settings
-  persist to NVS.
-- **Tuned for hardware:** drift-free timer + continuous-µs phase lock keep the
-  OP-XY tight across tempo (offset ~+30 ms, persisted); a dropped beat packet
-  no longer causes a false Stop+Start dropout.
-- **Next:** DIN-5 MIDI out, then the big one — ESP as tempo master so CDJs sync
-  *to* the box (free-run + manual BPM are its building blocks).
+The full pipeline runs on real hardware (Waveshare ESP32-S3-ETH): Ethernet in,
+parse, dual-source PLL, 24 PPQN clock, out over both the USB MIDI host jack and
+the 5-pin DIN simultaneously, locked to the master's tempo and pitch. The
+front-panel UI (OLED, encoder, buttons) drives source-select, a persisted
+settings menu, offset trim, free-run, standalone tap-tempo, and manual beat
+re-sync. The desktop binary is a validated reference implementation.
 
-[docs/session-notes.md](docs/session-notes.md) is the live handoff;
-[docs/phases.md](docs/phases.md) is the roadmap.
+A drift-free timer plus continuous-microsecond phase lock keep slaves tight
+across tempo changes, and bar-slip realignment is gated behind a confidence
+counter so a dropped beat packet cannot cause a false stop.
+
+See [ROADMAP.md](ROADMAP.md) for the full status and what is next (the large
+item: ESP32 as Pro DJ Link tempo master, so CDJs sync to the box).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Personal project — no license declared yet.
+Copyright 2026 Calvin Zikakis. Licensed under the
+[PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, modify, and
+build on for any **noncommercial** purpose (personal, hobby, research,
+education, nonprofits). Commercial use requires a separate license from the
+author. This is a source-available license, not an OSI-approved open-source
+one.

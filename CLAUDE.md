@@ -1,25 +1,28 @@
 # Working agreement for this repo
 
-## ⚠️ Always update docs before committing
+## Always update docs before committing
 
 **Before every `git commit`, update the docs that the change affects** — do it
 in the *same* commit (or an immediately preceding one), never "later." If a
 change alters behavior, hardware wiring, build/flash steps, status, or the
 roadmap, the docs must move with it. When in doubt, update.
 
-Doc map — what to touch for what:
+Doc map — what to touch for what (all public/tracked):
 
 | Doc | Update when… |
 |---|---|
-| [README.md](README.md) | user-facing behavior, build/flash, controls, feature status |
-| [docs/session-notes.md](docs/session-notes.md) | **the live handoff** — current state, what's wired, bugs, next steps. Update for almost every change. |
-| [docs/phases.md](docs/phases.md) | roadmap / phase status changes |
+| [README.md](README.md) | user-facing behavior, build/flash, controls, feature overview |
+| [ROADMAP.md](ROADMAP.md) | status (done vs next) and roadmap changes |
 | [docs/architecture.md](docs/architecture.md) | protocol, packet offsets, or clock/PLL design changes |
-| [docs/xdj-midi-bridge-context-v4.md](docs/xdj-midi-bridge-context-v4.md) | hardware: board, pin map, wiring, what's physically built |
-| docs/xdj-midi-bridge-context-v3.md, docs/handoff.md | historical/reference — leave unless the protocol research itself changes |
+| [docs/hardware.md](docs/hardware.md) | board, pin map, wiring, resistor values, hardware gotchas |
 
-After updating, sanity-check that README + session-notes don't contradict the
-code or each other.
+`docs/local/` holds personal working notes (session log, historical handoff/
+context docs) and is **gitignored** — keep it as a private scratchpad if you
+use it, but nothing there is published and the doc map above does not depend on
+it.
+
+After updating, sanity-check that README + ROADMAP don't contradict the code or
+each other.
 
 **Keep the run tasks current.** [`.vscode/tasks.json`](.vscode/tasks.json) holds
 the one-click build / flash / monitor / run configs (the `fw: *` tasks for
@@ -27,11 +30,10 @@ firmware, the desktop bridge/replay tasks). Whenever a build, flash, monitor,
 run command, env, or port changes, update the matching task so the run tasks
 keep working.
 
-**Keep the task list current too.** The next-steps / TODO list and the "Deferred
-feature ideas" in [docs/session-notes.md](docs/session-notes.md) are this
-project's task tracker — as work progresses, tick off or remove finished items
-and add new follow-ups as they surface, so the handoff always reflects what's
-actually left to do.
+**Keep the roadmap current too.** The Done / Next lists in
+[ROADMAP.md](ROADMAP.md) are the public task tracker — as work progresses, move
+finished items to Done and add new follow-ups under Next, so the roadmap always
+reflects what's actually left to do.
 
 > A PreToolUse hook (`.claude/settings.json` → `.claude/hooks/docs-gate.sh`)
 > enforces the first rule: it blocks a `git commit` that stages code under
@@ -52,7 +54,8 @@ between the desktop binary ([`desktop/`](desktop/)) and the ESP32-S3 firmware
 platform. **A change in `lib/prolink/` affects both** — keep desktop building.
 
 Current target hardware is a **Waveshare ESP32-S3-ETH** (onboard W5500). See
-[docs/session-notes.md](docs/session-notes.md) for live status.
+[ROADMAP.md](ROADMAP.md) for status and [docs/hardware.md](docs/hardware.md)
+for the board and wiring.
 
 ## Firmware: build, flash, monitor
 

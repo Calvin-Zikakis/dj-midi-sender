@@ -12,7 +12,8 @@ cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 
 staged="$(git diff --cached --name-only 2>/dev/null)"
 code=$(printf '%s\n' "$staged" | grep -E '^(lib|firmware|desktop)/' || true)
-docs=$(printf '%s\n' "$staged" | grep -E '^(README\.md|CLAUDE\.md|docs/)' || true)
+# docs/local/ is gitignored (personal notes), so it never appears staged here.
+docs=$(printf '%s\n' "$staged" | grep -E '^(README\.md|CLAUDE\.md|ROADMAP\.md|CONTRIBUTING\.md|docs/)' || true)
 
 if [ -n "$code" ] && [ -z "$docs" ]; then
   cat <<'JSON'
