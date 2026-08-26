@@ -401,16 +401,27 @@ order:
    2. the **new device asserts `mm=1` (0x9E)**, keeping its `Syncn`;
    3. the **old master drops `mm` to 0 and bumps `Syncn` to new+1**.
 
-   Steps 2-3 we can reproduce. Step 1's *trigger* is the blocker. Two live
-   captures (`docs/local/handoff-dance.txt`) show the current master sets `Mh`
-   and starts yielding **before** the new deck asserts `mm=1`, and **no
-   broadcast packet on 50001/50002 correlates with it** (a raw-datagram capture
-   during a real handoff caught only unrelated periodic type-`0x03` traffic).
-   So the takeover request is **unicast** to the current master — which the box,
-   not being the master, cannot observe. Reverse-engineering it therefore needs
-   a promiscuous capture (a mirror/hub port with the Mac running Wireshark)
-   during a real handoff, not the box's own sniffing. Once the request format
-   is known, send it to the current master, then run steps 2-3.
+   Steps 2-3 we can reproduce. Step 1's *trigger* is a **unicast** command to
+   the current master — which is why the box (not being the master) never saw it
+   in two live handoff captures (`docs/local/handoff-dance.txt`; only unrelated
+   periodic type-`0x03` broadcasts appeared). We do **not** need to sniff it:
+   Deep Symmetry's beat-link publishes the format. The request is a
+   **`SYNC_CONTROL`** packet:
+
+   - type `0x2a` at offset `0x0a`; header is magic(10) + type + name(20 @ `0x0b`),
+     **payload at `0x1f`**;
+   - become-master payload (13 B): `01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 01`
+     (the trailing `0x01` is the "become master" command; `0x10`/`0x20` are
+     sync on/off), `<dev>` = our device number;
+   - sent **unicast to the current master's IP on port 50001**.
+
+   There are also dedicated `MASTER_HANDOFF_REQUEST` (`0x26`) / `RESPONSE`
+   (`0x27`) types worth trying if `SYNC_CONTROL` alone doesn't make the master
+   yield. Implementation TODO: build the `0x2a` packet
+   (`build_sync_control_packet`), track the current master's **source IP** (the
+   UDP recv path currently drops it), send the request, then assert `mm=1` when
+   the master's `Mh` shows our device number. Exact request direction/among the
+   0x2a/0x26 options is to be confirmed live.
 
 5. **Front-panel Master mode** — a toggle that makes the box the tempo
    authority, using the existing free-run / manual-BPM tempo as its grid.
