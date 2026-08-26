@@ -23,6 +23,18 @@ uint32_t r32(const uint8_t* p) {
             static_cast<uint32_t>(p[3]);
 }
 
+void w16(uint8_t* p, uint16_t v) {
+    p[0] = static_cast<uint8_t>(v >> 8);
+    p[1] = static_cast<uint8_t>(v & 0xFF);
+}
+
+void w32(uint8_t* p, uint32_t v) {
+    p[0] = static_cast<uint8_t>((v >> 24) & 0xFF);
+    p[1] = static_cast<uint8_t>((v >> 16) & 0xFF);
+    p[2] = static_cast<uint8_t>((v >>  8) & 0xFF);
+    p[3] = static_cast<uint8_t>( v        & 0xFF);
+}
+
 void copy_device_name(char dst[21], const uint8_t* src) {
     // Field is 20 bytes ASCII, null-padded at offset 0x0B in every packet type.
     std::memcpy(dst, src, 20);
@@ -128,6 +140,57 @@ size_t build_keepalive_packet(uint8_t* out, size_t out_len,
     // 0x31..0x33 padding
     out[0x34] = 0x01;          // flags = is_player_or_mixer
     out[0x35] = 0x64;          // u4 (CDJ-3000 compat)
+    return PKT_LEN;
+}
+
+size_t build_beat_packet(uint8_t* out, size_t out_len,
+                         const char* device_name,
+                         uint8_t device_num,
+                         float bpm,
+                         uint8_t beat_in_bar) {
+    constexpr size_t PKT_LEN = 0x60;  // 96 bytes, matching the XDJ-XZ
+    if (out_len < PKT_LEN) return 0;
+    if (!(bpm > 0.0f))     return 0;
+    if (beat_in_bar < 1 || beat_in_bar > 4) beat_in_bar = 1;
+
+    std::memset(out, 0, PKT_LEN);
+    std::memcpy(out, MAGIC, sizeof(MAGIC));  // 0x00..0x09
+    out[0x0A] = PKT_TYPE_BEAT;               // 0x28
+
+    // Device name, 20 bytes null-padded ASCII at 0x0B (same field the parser
+    // reads back).
+    for (size_t i = 0; i < 20; ++i) {
+        if (!device_name || device_name[i] == '\0') break;
+        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
+    }
+
+    out[0x1F] = 0x01;          // subtype / proto version (from capture)
+    // 0x20 = 0x00
+    out[0x21] = device_num;    // device number
+    w16(out + 0x22, 0x003C);   // fixed length field (from capture)
+
+    // Timing prediction fields (uint32 BE ms until each upcoming boundary).
+    // Derived empirically from captures/xdj-xz-export-mode.pcapng: as multiples
+    // of the beat interval, by beat_in_bar b:
+    //   next=1  2nd=2  next-bar=(5-b)  4th=4  2nd-bar=(9-b)  8th=8
+    const double interval = 60000.0 / static_cast<double>(bpm);
+    auto ms = [&](int mult) {
+        return static_cast<uint32_t>(interval * mult + 0.5);
+    };
+    w32(out + 0x24, ms(1));                        // ms to next beat
+    w32(out + 0x28, ms(2));                        // ms to 2nd beat
+    w32(out + 0x2C, ms(5 - beat_in_bar));          // ms to next bar (downbeat)
+    w32(out + 0x30, ms(4));                        // ms to 4th beat
+    w32(out + 0x34, ms(9 - beat_in_bar));          // ms to 2nd bar
+    w32(out + 0x38, ms(8));                        // ms to 8th beat
+
+    std::memset(out + 0x3C, 0xFF, 0x18);           // 0x3C..0x53 reserved (0xFF)
+    w32(out + 0x54, PITCH_UNITY);                  // pitch 1.0x — we are the tempo
+    // 0x58..0x59 reserved = 0
+    w16(out + 0x5A, static_cast<uint16_t>(bpm * 100.0f + 0.5f));  // BPM x100
+    out[0x5C] = beat_in_bar;                       // beat-within-bar (1..4)
+    // 0x5D..0x5E = 0
+    out[0x5F] = device_num;                        // device-number echo
     return PKT_LEN;
 }
 
