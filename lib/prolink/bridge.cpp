@@ -169,6 +169,7 @@ void Bridge::stop() {
 void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     auto parsed = parse_beat_packet(buf, len);
     if (!parsed) return;
+    if (cb_.on_beat_raw) cb_.on_beat_raw(buf, len);
     last_packet_ms_ = now_ms();
     beat_count_.fetch_add(1, std::memory_order_relaxed);
 
@@ -308,6 +309,7 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
 void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     auto parsed = parse_status_packet(buf, len);
     if (!parsed) return;
+    if (cb_.on_status_raw) cb_.on_status_raw(buf, len);
     uint64_t t = now_ms();
     last_packet_ms_ = t;
     last_status_ms_ = t;

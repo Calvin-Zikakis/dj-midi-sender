@@ -435,6 +435,34 @@ void bridge_task(void*) {
         printf("[bridge] %s\n", msg);
     };
 
+#ifdef DIAG_SERIAL_STUB
+    // Raw status/beat hex dump for tempo-master protocol RE. Our captures have
+    // no status packets, so this is how we get a real byte template from live
+    // hardware (XDJ-XZ + any CDJs on the link). Budget-limited so serial isn't
+    // flooded; a reboot re-arms it. Prints device number + master flag so both
+    // devices are distinguishable in the log.
+    cb.on_status_raw = [](const uint8_t* buf, size_t len) {
+        static int budget = 12;
+        if (budget <= 0) return;
+        --budget;
+        const uint8_t dev    = (len > 0x21) ? buf[0x21] : 0;
+        const bool    master = (len > 0x89) && ((buf[0x89] >> 5) & 1);
+        printf("[stat-raw] dev=%u len=%u master=%d\n", dev, (unsigned)len, master);
+        printf("[stat-raw] ");
+        for (size_t i = 0; i < len; ++i) printf("%02x", buf[i]);
+        printf("\n");
+    };
+    cb.on_beat_raw = [](const uint8_t* buf, size_t len) {
+        static int budget = 4;   // a couple of beats, to compare a CDJ vs our emitter
+        if (budget <= 0) return;
+        --budget;
+        const uint8_t dev = (len > 0x21) ? buf[0x21] : 0;
+        printf("[beat-raw] dev=%u len=%u\n[beat-raw] ", dev, (unsigned)len);
+        for (size_t i = 0; i < len; ++i) printf("%02x", buf[i]);
+        printf("\n");
+    };
+#endif
+
     prolink::Bridge bridge(beat_sock, status_sock, keepalive_sock,
                            clock, cfg, cb);
     bridge.set_clock_offset_ms(nvs_load_offset_ms(kDefaultClockOffsetMs));  // saved, else +30
