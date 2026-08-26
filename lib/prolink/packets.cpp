@@ -269,4 +269,30 @@ size_t build_status_packet(uint8_t* out, size_t out_len,
     return PKT_LEN;
 }
 
+size_t build_sync_control_packet(uint8_t* out, size_t out_len,
+                                 const char* device_name,
+                                 uint8_t device_num,
+                                 uint8_t cmd) {
+    constexpr size_t HDR_LEN = 0x1F;                 // magic + type + 20B name
+    constexpr size_t PAYLOAD_LEN = 13;
+    constexpr size_t PKT_LEN = HDR_LEN + PAYLOAD_LEN;  // 0x2C = 44 bytes
+    if (out_len < PKT_LEN) return 0;
+
+    std::memset(out, 0, PKT_LEN);
+    std::memcpy(out, MAGIC, sizeof(MAGIC));  // 0x00..0x09
+    out[0x0A] = PKT_TYPE_SYNC_CONTROL;       // 0x2A
+    for (size_t i = 0; i < 20; ++i) {
+        if (!device_name || device_name[i] == '\0') break;
+        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
+    }
+    // Payload at 0x1F: 01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 <cmd>
+    uint8_t* p = out + HDR_LEN;
+    p[0x00] = 0x01;
+    p[0x02] = device_num;
+    p[0x04] = 0x08;
+    p[0x08] = device_num;
+    p[0x0C] = cmd;
+    return PKT_LEN;
+}
+
 }  // namespace prolink

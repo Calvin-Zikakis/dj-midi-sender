@@ -7,9 +7,12 @@ namespace prolink {
 inline constexpr uint8_t MAGIC[10] =
     {0x51, 0x73, 0x70, 0x74, 0x31, 0x57, 0x6d, 0x4a, 0x4f, 0x4c};  // "Qspt1WmJOL"
 
-inline constexpr uint8_t PKT_TYPE_KEEPALIVE = 0x06;
-inline constexpr uint8_t PKT_TYPE_STATUS    = 0x0A;
-inline constexpr uint8_t PKT_TYPE_BEAT      = 0x28;
+inline constexpr uint8_t PKT_TYPE_KEEPALIVE    = 0x06;
+inline constexpr uint8_t PKT_TYPE_STATUS       = 0x0A;
+inline constexpr uint8_t PKT_TYPE_BEAT         = 0x28;
+inline constexpr uint8_t PKT_TYPE_SYNC_CONTROL = 0x2A;  // sync/master command
+// Sync-control command byte (payload offset 0x0c): become tempo master.
+inline constexpr uint8_t SYNC_CMD_BECOME_MASTER = 0x01;
 
 inline constexpr uint16_t PORT_KEEPALIVE = 50000;
 inline constexpr uint16_t PORT_BEAT      = 50001;

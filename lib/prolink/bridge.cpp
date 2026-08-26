@@ -101,6 +101,9 @@ void Bridge::set_master_mode(bool on) {
     if (on) {
         master_beat_in_bar_    = 0;
         last_master_status_ms_ = 0;
+        // Fire a burst of become-master requests at the current master so it
+        // yields (sets its Mh to us); ~3 s at the 5 Hz status cadence.
+        master_request_countdown_ = 15;
         // Master mode is standalone: we run our own tempo and ignore other
         // decks. set_ignore_master() latches the manual tempo and the run loop
         // cold-starts the clock, whose per-beat callback drives beat emission.
@@ -125,6 +128,17 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
     last_master_status_ms_ = t;
     const float bpm = last_known_bpm_.load();
     if (!(bpm > 0.0f)) return;
+
+    // Takeover request burst: ask the current master to yield to us. beat-link
+    // unicasts this to the master; we broadcast it (also reaches the master)
+    // to avoid tracking its source IP for now.
+    if (master_request_countdown_ > 0) {
+        --master_request_countdown_;
+        uint8_t req[64];
+        size_t rn = build_sync_control_packet(req, sizeof(req), cfg_.device_name,
+                                              cfg_.device_num, SYNC_CMD_BECOME_MASTER);
+        if (rn) beat_sock_.send(req, rn, cfg_.broadcast_ip, PORT_BEAT);
+    }
     const uint8_t  beat  = master_beat_in_bar_ ? master_beat_in_bar_ : 1;
     const uint32_t syncn = max_syncn_seen_.load() + 1;   // outrank the peers
     uint8_t pkt[320];
