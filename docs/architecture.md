@@ -401,12 +401,16 @@ order:
    2. the **new device asserts `mm=1` (0x9E)**, keeping its `Syncn`;
    3. the **old master drops `mm` to 0 and bumps `Syncn` to new+1**.
 
-   Steps 2-3 we can reproduce. Step 1's *trigger* — the request that makes the
-   current master set `Mh` to us — is **not** in the status stream; it is almost
-   certainly a separate command packet (an unknown type our parser drops). The
-   remaining work is to capture raw UDP on 50001/50002 while a deck presses
-   MASTER, to reverse-engineer that request packet, then send it before
-   asserting `mm=1`.
+   Steps 2-3 we can reproduce. Step 1's *trigger* is the blocker. Two live
+   captures (`docs/local/handoff-dance.txt`) show the current master sets `Mh`
+   and starts yielding **before** the new deck asserts `mm=1`, and **no
+   broadcast packet on 50001/50002 correlates with it** (a raw-datagram capture
+   during a real handoff caught only unrelated periodic type-`0x03` traffic).
+   So the takeover request is **unicast** to the current master — which the box,
+   not being the master, cannot observe. Reverse-engineering it therefore needs
+   a promiscuous capture (a mirror/hub port with the Mac running Wireshark)
+   during a real handoff, not the box's own sniffing. Once the request format
+   is known, send it to the current master, then run steps 2-3.
 
 5. **Front-panel Master mode** — a toggle that makes the box the tempo
    authority, using the existing free-run / manual-BPM tempo as its grid.

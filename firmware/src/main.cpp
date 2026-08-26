@@ -478,6 +478,17 @@ void bridge_task(void*) {
         for (size_t i = 0; i < len; ++i) printf("%02x", buf[i]);
         printf("\n");
     };
+    // Unknown packet types (not beat 0x28 / status 0x0a) on 50001/50002 —
+    // hunting the master-takeover REQUEST command. Full hex so we can decode it.
+    cb.on_raw_datagram = [](uint16_t port, const uint8_t* buf, size_t len) {
+        if (len < 0x0B) return;
+        const uint8_t type = buf[0x0A];
+        if (type == 0x28 || type == 0x0A) return;   // skip known beat/status
+        printf("[cmd] port=%u type=0x%02x dev=%u len=%u\n[cmd] ", port, type,
+               (len > 0x21) ? buf[0x21] : 0, (unsigned)len);
+        for (size_t i = 0; i < len; ++i) printf("%02x", buf[i]);
+        printf("\n");
+    };
 #endif
 
     prolink::Bridge bridge(beat_sock, status_sock, keepalive_sock,
