@@ -124,7 +124,8 @@ uint32_t Clock::on_tick_() {
 
     // Emitting tick 0 is our beat boundary — timestamp it so feed_beat() has a
     // continuous-time reference for phase locking.
-    if (tick_in_beat_.load() == 0) {
+    const bool beat_boundary = (tick_in_beat_.load() == 0);
+    if (beat_boundary) {
         last_beat_anchor_us_.store(static_cast<int64_t>(timer_.now_us()));
     }
 
@@ -147,6 +148,10 @@ uint32_t Clock::on_tick_() {
     if (next_us < static_cast<int32_t>(MIN_TICK_PERIOD_US / 2)) {
         next_us = static_cast<int32_t>(MIN_TICK_PERIOD_US / 2);
     }
+
+    // Notify beat subscribers (tempo-master beat emission) after the MIDI tick
+    // so a slow handler can't delay the clock byte itself.
+    if (beat_boundary && on_beat_) on_beat_();
     return static_cast<uint32_t>(next_us);
 }
 
