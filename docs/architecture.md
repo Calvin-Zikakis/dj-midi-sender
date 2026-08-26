@@ -415,13 +415,27 @@ order:
      sync on/off), `<dev>` = our device number;
    - sent **unicast to the current master's IP on port 50001**.
 
-   There are also dedicated `MASTER_HANDOFF_REQUEST` (`0x26`) / `RESPONSE`
-   (`0x27`) types worth trying if `SYNC_CONTROL` alone doesn't make the master
-   yield. Implementation TODO: build the `0x2a` packet
-   (`build_sync_control_packet`), track the current master's **source IP** (the
-   UDP recv path currently drops it), send the request, then assert `mm=1` when
-   the master's `Mh` shows our device number. Exact request direction/among the
-   0x2a/0x26 options is to be confirmed live.
+   `build_sync_control_packet()` emits the `0x2a` command and the bridge fires
+   a burst of it on `set_master_mode(true)`. Live result: **the XDJ-700 does
+   not react** to a broadcast `0x2a` "become master." That matches the beat-link
+   semantics — `appointTempoMaster` commands a *target* to become master, it is
+   not "make me master," and beat-link **unicasts** it.
+
+   The deeper finding: **beat-link itself never self-becomes master from an
+   existing master.** Its `VirtualCdj` only *appoints other* (real) devices and
+   *receives* yields (`processUpdate`: when a status packet's `Mh` names us, set
+   `master = true`). There is no published `becomeTempoMaster()` — so wresting
+   master from a live deck is beyond what the public reverse-engineering covers.
+   The dedicated `MASTER_HANDOFF_REQUEST` (`0x26`) / `RESPONSE` (`0x27`) types
+   are exchanged **unicast between real players** during a handoff, so the only
+   way to learn their payloads is a **promiscuous capture** (mirror/hub port +
+   Wireshark) of a real deck-to-deck handoff — the box can't see them, and the
+   reference code doesn't send them. That capture is the concrete next step.
+
+   What *does* work today: the box asserts `mm=1` with `Syncn=max+1` and
+   broadcasts a well-formed grid — so it should be followable in scenarios where
+   no other master is contending. Taking over from an active master is the open
+   frontier.
 
 5. **Front-panel Master mode** — a toggle that makes the box the tempo
    authority, using the existing free-run / manual-BPM tempo as its grid.
