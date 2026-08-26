@@ -202,6 +202,7 @@ private:
     uint8_t               master_beat_in_bar_ = 0;   // 0 = not started; 1..4
     uint64_t              last_master_status_ms_ = 0;
     std::atomic<uint32_t> max_syncn_seen_{0};        // highest Syncn from peers
+    int                   master_request_countdown_ = 0;  // takeover requests left to send
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};

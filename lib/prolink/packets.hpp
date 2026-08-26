@@ -109,4 +109,15 @@ size_t build_status_packet(uint8_t* out, size_t out_len,
                            bool is_master,
                            uint32_t syncn);
 
+// Build a Pro DJ Link sync-control command (type 0x2A, port 50001) — the packet
+// that requests a tempo-master takeover. Format from Deep Symmetry's beat-link:
+// header + 13-byte payload `01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 <cmd>`,
+// where cmd is SYNC_CMD_BECOME_MASTER (0x01) to request master. Sent to the
+// current master (unicast in beat-link; broadcast also reaches it). Returns
+// bytes written (44) or 0.
+size_t build_sync_control_packet(uint8_t* out, size_t out_len,
+                                 const char* device_name,
+                                 uint8_t device_num,
+                                 uint8_t cmd);
+
 }  // namespace prolink
