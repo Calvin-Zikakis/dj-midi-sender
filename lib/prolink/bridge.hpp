@@ -69,6 +69,10 @@ struct BridgeCallbacks {
     // raw wire bytes. Null by default (zero cost).
     std::function<void(const uint8_t*, size_t)> on_status_raw;
     std::function<void(const uint8_t*, size_t)> on_beat_raw;
+    // Fired for EVERY received datagram (port, bytes) before parsing — catches
+    // unknown packet types (e.g. sync/master-request commands) that the beat/
+    // status parsers drop. Null by default.
+    std::function<void(uint16_t, const uint8_t*, size_t)> on_raw_datagram;
 };
 
 // Orchestrates the dual-source clock pipeline. Owns master tracking,

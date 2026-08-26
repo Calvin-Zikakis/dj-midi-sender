@@ -172,10 +172,16 @@ void Bridge::run() {
     while (running_.load()) {
         // Round-robin both listener sockets with short timeouts.
         int n = beat_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS);
-        if (n > 0) handle_beat_packet(buf, static_cast<size_t>(n));
+        if (n > 0) {
+            if (cb_.on_raw_datagram) cb_.on_raw_datagram(PORT_BEAT, buf, static_cast<size_t>(n));
+            handle_beat_packet(buf, static_cast<size_t>(n));
+        }
 
         n = status_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS);
-        if (n > 0) handle_status_packet(buf, static_cast<size_t>(n));
+        if (n > 0) {
+            if (cb_.on_raw_datagram) cb_.on_raw_datagram(PORT_STATUS, buf, static_cast<size_t>(n));
+            handle_status_packet(buf, static_cast<size_t>(n));
+        }
 
         uint64_t t = now_ms();
         maybe_send_keepalive(t);
