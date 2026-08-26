@@ -334,6 +334,50 @@ Where `t` is the next pending tick index. With `offset = 0` this is the
 no-offset case (catch up by `t` ticks). With `offset > 0` (lead), the
 target moves earlier, so `err` becomes more negative.
 
+## Becoming the tempo master (in progress)
+
+The bridge is a follower: it reads the XZ's grid and emits MIDI clock. The
+inverse — the box as Pro DJ Link **tempo master**, so CDJs sync *to* it — is
+tracked in ROADMAP.md and this branch. It has several layers, in dependency
+order:
+
+1. **Beat-packet emitter** (done). `build_beat_packet()` in
+   [`packets.cpp`](../lib/prolink/packets.cpp) constructs a type-`0x28` beat
+   packet advertising our own grid, byte-symmetric to the parser. Validated:
+   built with the capture's parameters it reproduces a real XDJ-XZ beat packet
+   byte-for-byte except sub-millisecond rounding on one timing field.
+
+   The six timing-prediction fields (`0x24`–`0x38`) were derived empirically
+   from `captures/xdj-xz-export-mode.pcapng`. As multiples of the beat interval
+   (`60000 / bpm`), indexed by `beat_in_bar` *b*:
+
+   | field | offset | multiple |
+   |-------|--------|----------|
+   | next beat  | `0x24` | 1 |
+   | 2nd beat   | `0x28` | 2 |
+   | next bar   | `0x2C` | 5 − *b* |
+   | 4th beat   | `0x30` | 4 |
+   | 2nd bar    | `0x34` | 9 − *b* |
+   | 8th beat   | `0x38` | 8 |
+
+2. **Broadcaster orchestration** (next). Broadcast beat packets on port 50001,
+   one per beat, phase-aligned to the box's own clock so the MIDI clock and the
+   DJ-Link grid share one beat source.
+
+3. **Status-packet emitter + master flag** (next; harder). Followers take tempo
+   and the master designation from status packets (the master flag at `0x89`
+   bit 5, BPM at `0x92`). Our captures contain **no** status packets, so unlike
+   the beat packet there is no byte template to mirror — this must be built from
+   the deep-symmetry / python-prodj-link field references and validated live.
+
+4. **Master-takeover handshake** (needs live iteration). Pro DJ Link negotiates
+   the master role via the master / master-handoff fields in status packets. A
+   device requesting master signals it; the current master yields. Getting real
+   CDJs to follow will require iterating against live hardware.
+
+5. **Front-panel Master mode** — a toggle that makes the box the tempo
+   authority, using the existing free-run / manual-BPM tempo as its grid.
+
 ## Master device tracking
 
 The master flag is in status-packet flags (bit 5). Track which device

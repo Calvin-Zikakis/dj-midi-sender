@@ -81,4 +81,17 @@ size_t build_keepalive_packet(uint8_t* out, size_t out_len,
                               const uint8_t mac[6],
                               uint32_t ip_host_order);
 
+// Build a Pro DJ Link beat packet (type 0x28, port 50001) advertising our own
+// beat grid — the foundation of tempo-master mode, where the box becomes the
+// tempo authority CDJs sync to. Byte layout mirrors a real XDJ-XZ beat packet
+// (captures/xdj-xz-export-mode.pcapng); the six timing prediction fields are
+// filled from a formula derived empirically from those captures (see the .cpp).
+// We broadcast our own tempo, so pitch is fixed at unity and BPM carries the
+// effective tempo. `beat_in_bar` is 1..4. Returns bytes written (96) or 0.
+size_t build_beat_packet(uint8_t* out, size_t out_len,
+                         const char* device_name,
+                         uint8_t device_num,
+                         float bpm,
+                         uint8_t beat_in_bar);
+
 }  // namespace prolink
