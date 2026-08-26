@@ -45,6 +45,8 @@ struct StatusPacket {
     uint8_t  flags          = 0;
     uint16_t mv             = 0;
     uint8_t  beat_in_bar    = 0;
+    uint32_t syncn          = 0;   // master-generation counter (0x84); the box
+                                   //   must exceed the max seen to take master
 
     bool is_playing() const { return (flags >> 6) & 1; }
     bool is_master()  const { return (flags >> 5) & 1; }
@@ -93,5 +95,18 @@ size_t build_beat_packet(uint8_t* out, size_t out_len,
                          uint8_t device_num,
                          float bpm,
                          uint8_t beat_in_bar);
+
+// Build a Pro DJ Link status packet (type 0x0A, port 50002) for tempo-master
+// mode. Built from a real XDJ-700 master status packet captured live (see
+// docs/architecture.md): the template's unknown/device fields are kept and the
+// dynamic + master fields overwritten. Set `is_master` to assert the master
+// role (flags 0x89 bit 5 + Mm 0x9E = 0x01). Returns bytes written (284) or 0.
+size_t build_status_packet(uint8_t* out, size_t out_len,
+                           const char* device_name,
+                           uint8_t device_num,
+                           float bpm,
+                           uint8_t beat_in_bar,
+                           bool is_master,
+                           uint32_t syncn);
 
 }  // namespace prolink

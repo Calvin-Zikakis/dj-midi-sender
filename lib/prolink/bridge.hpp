@@ -135,6 +135,18 @@ public:
     // is the relative version (spin fine-tune).
     void set_manual_bpm(float bpm);
 
+    // Tempo-master mode (experimental). When enabled, the box broadcasts Pro
+    // DJ Link beat packets (port 50001, aligned to our clock via on_master_beat)
+    // and status packets with the master flag (port 50002, ~5 Hz), so CDJs in
+    // sync mode can follow the box's tempo/grid. Implies standalone (we ignore
+    // other decks and run our own tempo). Requires the beat/status sockets to
+    // have broadcast enabled by the platform layer.
+    void set_master_mode(bool on);
+    bool master_mode() const { return master_mode_.load(); }
+    // Called once per beat from the clock (Clock::set_on_beat) to emit a beat
+    // packet advertising our grid. No-op unless master mode is on.
+    void on_master_beat();
+
     // Manual beat re-sync (front-panel tap). MIDI clock carries tempo but not
     // bar position, so if a slave's transport is stopped/started locally it
     // keeps the tempo but loses bar alignment with the master. This re-emits
@@ -162,6 +174,7 @@ private:
     void maybe_send_keepalive(uint64_t now_ms);
     void maybe_stop_on_silence(uint64_t now_ms);
     void maybe_resync(uint64_t now_ms);
+    void maybe_broadcast_master_status(uint64_t now_ms);
     void log(const char* msg) const;
 
     IUdpSocket& beat_sock_;
@@ -180,6 +193,11 @@ private:
     // Manual re-sync request: 0 = none, 1 = deferred (on next master downbeat),
     // 2 = immediate. Set from the UI task, consumed on the bridge thread.
     std::atomic<uint8_t>  resync_request_{0};
+    // Tempo-master mode broadcasting.
+    std::atomic<bool>     master_mode_{false};
+    uint8_t               master_beat_in_bar_ = 0;   // 0 = not started; 1..4
+    uint64_t              last_master_status_ms_ = 0;
+    std::atomic<uint32_t> max_syncn_seen_{0};        // highest Syncn from peers
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};

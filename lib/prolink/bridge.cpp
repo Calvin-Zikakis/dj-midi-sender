@@ -96,6 +96,44 @@ void Bridge::request_resync(bool immediate) {
     resync_request_.store(immediate ? 2 : 1);
 }
 
+void Bridge::set_master_mode(bool on) {
+    master_mode_.store(on);
+    if (on) {
+        master_beat_in_bar_    = 0;
+        last_master_status_ms_ = 0;
+        // Master mode is standalone: we run our own tempo and ignore other
+        // decks. set_ignore_master() latches the manual tempo and the run loop
+        // cold-starts the clock, whose per-beat callback drives beat emission.
+        set_ignore_master(true);
+    }
+}
+
+void Bridge::on_master_beat() {
+    if (!master_mode_.load()) return;
+    master_beat_in_bar_ = static_cast<uint8_t>((master_beat_in_bar_ % 4) + 1);
+    const float bpm = last_known_bpm_.load();
+    if (!(bpm > 0.0f)) return;
+    uint8_t pkt[128];
+    size_t n = build_beat_packet(pkt, sizeof(pkt), cfg_.device_name,
+                                 cfg_.device_num, bpm, master_beat_in_bar_);
+    if (n) beat_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_BEAT);
+}
+
+void Bridge::maybe_broadcast_master_status(uint64_t t) {
+    if (!master_mode_.load()) return;
+    if (t - last_master_status_ms_ < 200) return;   // ~5 Hz, like real players
+    last_master_status_ms_ = t;
+    const float bpm = last_known_bpm_.load();
+    if (!(bpm > 0.0f)) return;
+    const uint8_t  beat  = master_beat_in_bar_ ? master_beat_in_bar_ : 1;
+    const uint32_t syncn = max_syncn_seen_.load() + 1;   // outrank the peers
+    uint8_t pkt[320];
+    size_t n = build_status_packet(pkt, sizeof(pkt), cfg_.device_name,
+                                   cfg_.device_num, bpm, beat, /*is_master*/ true,
+                                   syncn);
+    if (n) status_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_STATUS);
+}
+
 void Bridge::set_ignore_master(bool on) {
     ignore_master_.store(on);
     // Enabling forces the manual-tempo source (the run loop then cold-starts
@@ -143,6 +181,7 @@ void Bridge::run() {
         maybe_send_keepalive(t);
         maybe_stop_on_silence(t);
         maybe_resync(t);
+        maybe_broadcast_master_status(t);
 
         // Standalone / free-run cold-start: if the manual tempo is the source
         // and nothing is running yet, start clocking (emits MIDI Start). Lets
@@ -310,6 +349,12 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     auto parsed = parse_status_packet(buf, len);
     if (!parsed) return;
     if (cb_.on_status_raw) cb_.on_status_raw(buf, len);
+    // Track the highest master-generation counter any peer reports, so a master
+    // takeover can announce Syncn = max+1 (required for CDJs to yield master).
+    if (parsed->device_num != cfg_.device_num &&
+        parsed->syncn > max_syncn_seen_.load()) {
+        max_syncn_seen_.store(parsed->syncn);
+    }
     uint64_t t = now_ms();
     last_packet_ms_ = t;
     last_status_ms_ = t;

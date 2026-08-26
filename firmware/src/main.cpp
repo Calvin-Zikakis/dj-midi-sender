@@ -347,12 +347,19 @@ void bridge_task(void*) {
         return;
     }
     keepalive_sock.enable_broadcast();
+    // Tempo-master mode broadcasts beat/status packets from these sockets.
+    beat_sock.enable_broadcast();
+    status_sock.enable_broadcast();
 
     firmware::TimerEsp timer;
     prolink::Clock clock(g_midi_out, timer, /* gain_divisor */ 16);
 
     prolink::BridgeConfig cfg;
+#ifdef MASTER_TEST
+    cfg.device_num = 4;  // tempo-master claims need a real deck number (1-4)
+#else
     cfg.device_num = 7;  // safe slot (1-4 = decks, 5-6 = mixers; see docs/architecture.md)
+#endif
     std::strncpy(cfg.device_name, "xdj-bridge", sizeof(cfg.device_name) - 1);
     std::memcpy(cfg.mac, g_mac, 6);
     cfg.local_ip            = kLocalIpHost;
@@ -441,16 +448,26 @@ void bridge_task(void*) {
     // hardware (XDJ-XZ + any CDJs on the link). Budget-limited so serial isn't
     // flooded; a reboot re-arms it. Prints device number + master flag so both
     // devices are distinguishable in the log.
+    // Compact master-handoff logger: print the master-relevant fields for a
+    // device only when they change, so a real master handoff between decks
+    // shows its exact Mm/Mh/Syncn/flags transitions without flooding serial.
     cb.on_status_raw = [](const uint8_t* buf, size_t len) {
-        static int budget = 12;
-        if (budget <= 0) return;
-        --budget;
-        const uint8_t dev    = (len > 0x21) ? buf[0x21] : 0;
-        const bool    master = (len > 0x89) && ((buf[0x89] >> 5) & 1);
-        printf("[stat-raw] dev=%u len=%u master=%d\n", dev, (unsigned)len, master);
-        printf("[stat-raw] ");
-        for (size_t i = 0; i < len; ++i) printf("%02x", buf[i]);
-        printf("\n");
+        if (len < 0xA7) return;
+        const uint8_t  dev    = buf[0x21];
+        const uint8_t  flags  = buf[0x89];
+        const uint8_t  mm     = buf[0x9E];
+        const uint8_t  mh     = buf[0x9F];
+        const uint32_t syncn  = (uint32_t(buf[0x84]) << 24) | (uint32_t(buf[0x85]) << 16) |
+                                (uint32_t(buf[0x86]) << 8) | buf[0x87];
+        struct HS { uint8_t flags, mm, mh; uint32_t syncn; bool seen; };
+        static HS prev[8] = {};
+        if (dev >= 8) return;
+        HS& p = prev[dev];
+        if (p.seen && p.flags == flags && p.mm == mm && p.mh == mh && p.syncn == syncn) return;
+        p = {flags, mm, mh, syncn, true};
+        const uint16_t bpm = (uint16_t(buf[0x92]) << 8) | buf[0x93];
+        printf("[hs] dev=%u flags=0x%02x master=%d mm=0x%02x mh=0x%02x syncn=%lu bpm=%.2f beat=%u\n",
+               dev, flags, (flags >> 5) & 1, mm, mh, (unsigned long)syncn, bpm / 100.0, buf[0xA6]);
     };
     cb.on_beat_raw = [](const uint8_t* buf, size_t len) {
         static int budget = 4;   // a couple of beats, to compare a CDJ vs our emitter
@@ -471,6 +488,19 @@ void bridge_task(void*) {
     // Publish for the UI task now that both objects exist on this stack.
     g_clock.store(&clock, std::memory_order_release);
     g_bridge.store(&bridge, std::memory_order_release);
+
+    // Fire a Pro DJ Link beat packet on every clock beat when master mode is on
+    // (no-op otherwise). Both objects outlive run() on this stack.
+    clock.set_on_beat([&bridge]() { bridge.on_master_beat(); });
+
+#ifdef MASTER_TEST
+    // Experimental tempo-master bench test (PLATFORMIO_BUILD_FLAGS='-DMASTER_TEST').
+    // Broadcast as master at an obvious test tempo so we can see whether a CDJ
+    // in sync mode follows the box. 100 BPM is well clear of typical track BPMs.
+    bridge.set_manual_bpm(100.0f);
+    bridge.set_master_mode(true);
+    printf("[master-test] broadcasting as Pro DJ Link tempo master @ 100 BPM\n");
+#endif
 
     printf("[bridge] starting — vCDJ device %u, broadcast %s\n",
            cfg.device_num, "169.254.255.255");

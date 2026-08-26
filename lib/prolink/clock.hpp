@@ -72,6 +72,11 @@ public:
     void set_offset_us(int32_t offset_us) override;
     int32_t get_offset_us() const override { return offset_us_.load(); }
 
+    // Optional hook fired once per beat, at the tick-0 boundary (after the MIDI
+    // clock byte for that tick). Used by tempo-master mode to emit a Pro DJ Link
+    // beat packet aligned to our own grid. Runs in the timer callback context.
+    void set_on_beat(std::function<void()> on_beat) { on_beat_ = std::move(on_beat); }
+
     // Status readouts (lock-free).
     bool     is_running()             const { return running_.load(); }
     float    current_bpm()            const { return current_bpm_.load(); }
@@ -97,6 +102,7 @@ private:
     std::atomic<float>    current_bpm_;
     std::atomic<bool>     running_;
     std::atomic<uint64_t> ticks_emitted_;    // monotonic counter for rate display
+    std::function<void()> on_beat_;          // fired at each tick-0 boundary
 };
 
 }  // namespace prolink

@@ -386,10 +386,27 @@ order:
    beat packet. Set the master fields (`0x89` bit 5, `0x9E`=`0x01`), our BPM at
    `0x92`, `Mv`=`0x8000`, unity pitch, and beat at `0xA6`; keep the rest.
 
-4. **Master-takeover handshake** (needs live iteration). Pro DJ Link negotiates
-   the master role via the master / master-handoff fields in status packets. A
-   device requesting master signals it; the current master yields. Getting real
-   CDJs to follow will require iterating against live hardware.
+4. **Master-takeover handshake** (in progress; needs one more capture). The
+   full broadcast path is built — `build_status_packet()` from the live master
+   template, a `MasterBroadcaster` in `Bridge` that emits beat packets per clock
+   beat and status packets at ~5 Hz with the master fields, `Syncn` tracked from
+   peers and broadcast as `max+1`, all behind `Bridge::set_master_mode()`
+   (device 4). But a bare master claim does **not** dislodge an existing master.
+
+   The handoff *dance* was captured live (XDJ-700 <-> XDJ-XZ, see
+   `docs/local/handoff-dance.txt`):
+
+   1. the **current master sets its `Mh` (0x9F) to the incoming device's
+      number** — this is the yield, triggered by the new deck's request;
+   2. the **new device asserts `mm=1` (0x9E)**, keeping its `Syncn`;
+   3. the **old master drops `mm` to 0 and bumps `Syncn` to new+1**.
+
+   Steps 2-3 we can reproduce. Step 1's *trigger* — the request that makes the
+   current master set `Mh` to us — is **not** in the status stream; it is almost
+   certainly a separate command packet (an unknown type our parser drops). The
+   remaining work is to capture raw UDP on 50001/50002 while a deck presses
+   MASTER, to reverse-engineer that request packet, then send it before
+   asserting `mm=1`.
 
 5. **Front-panel Master mode** — a toggle that makes the box the tempo
    authority, using the existing free-run / manual-BPM tempo as its grid.
