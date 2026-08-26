@@ -94,10 +94,25 @@ implementations.
 | `0x90` | 2 B  | `Mv` validity / BpmState | uint16 BE; `0x8000` = rekordbox, `0x7FFF` = unanalyzed |
 | `0x92` | 2 B  | Track BPM × 100 | uint16 BE |
 | `0x98` | 4 B  | `Pitch2` (local fader only) | uint32 BE — diverges from Pitch1 in sync mode. **Ignore.** |
+| `0x9E` | 1 B  | **`Mm`** master flag | `0x01` when this device is the tempo master, else `0x00` |
+| `0x9F` | 1 B  | **`Mh`** master handoff | device number this player is yielding master to, or `0xFF` for none |
 | `0xA6` | 1 B  | Beat-within-bar | 1–4 |
 
-Approximate full packet size: ~208 bytes (varies by player model; XDJ-XZ
-is consistent with the XDJ-1000 layout from python-prodj-link).
+Full packet size observed live: **284 bytes** (XDJ-700) / **292 bytes** (XDJ-XZ
+decks) — varies by player model.
+
+### Master designation — verified against live hardware (XDJ-700 + XDJ-XZ)
+
+Captured on a live link with an XDJ-700 acting as tempo master alongside an
+XDJ-XZ. Diffing the master's status packet against the followers', the master
+role is exactly two fields:
+
+- **`0x89` bit 5 set** (flags `0xEC` on the master vs `0xCC` on followers), and
+- **`0x9E` = `0x01`** (`Mm`, "I am master"); everyone else has `0x00`.
+
+`0x9F` (`Mh`) is `0xFF` on all when no handoff is in progress. To claim master,
+those are the fields to assert; the takeover *handshake* (getting a current
+master to yield via `Mh`) is the piece still to be worked out live.
 
 Sources cross-checked: [Deep Symmetry beat-link `CdjStatus.java`](https://github.com/Deep-Symmetry/beat-link/blob/master/src/main/java/org/deepsymmetry/beatlink/CdjStatus.java),
 [python-prodj-link `packets.py`](https://github.com/flesniak/python-prodj-link/blob/master/prodj/network/packets.py)
@@ -364,11 +379,12 @@ order:
    one per beat, phase-aligned to the box's own clock so the MIDI clock and the
    DJ-Link grid share one beat source.
 
-3. **Status-packet emitter + master flag** (next; harder). Followers take tempo
-   and the master designation from status packets (the master flag at `0x89`
-   bit 5, BPM at `0x92`). Our captures contain **no** status packets, so unlike
-   the beat packet there is no byte template to mirror — this must be built from
-   the deep-symmetry / python-prodj-link field references and validated live.
+3. **Status-packet emitter + master flag** (next). Followers take tempo and the
+   master designation from status packets. A live capture (XDJ-700 as master +
+   XDJ-XZ) now gives us a **real master status packet as a byte template** —
+   the gap the offline captures had — so this becomes template-based like the
+   beat packet. Set the master fields (`0x89` bit 5, `0x9E`=`0x01`), our BPM at
+   `0x92`, `Mv`=`0x8000`, unity pitch, and beat at `0xA6`; keep the rest.
 
 4. **Master-takeover handshake** (needs live iteration). Pro DJ Link negotiates
    the master role via the master / master-handoff fields in status packets. A

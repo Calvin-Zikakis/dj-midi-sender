@@ -64,6 +64,11 @@ struct BridgeCallbacks {
     std::function<void(const BeatPacket&)>   on_beat;
     std::function<void(const StatusPacket&)> on_status;
     std::function<void(const char*)>         on_log;
+    // Raw-bytes hooks for protocol reverse-engineering / diagnostics. Called
+    // for EVERY parsed packet of that type, before master filtering, with the
+    // raw wire bytes. Null by default (zero cost).
+    std::function<void(const uint8_t*, size_t)> on_status_raw;
+    std::function<void(const uint8_t*, size_t)> on_beat_raw;
 };
 
 // Orchestrates the dual-source clock pipeline. Owns master tracking,
