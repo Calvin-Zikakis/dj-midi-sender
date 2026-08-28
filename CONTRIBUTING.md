@@ -39,7 +39,7 @@ The core has a dependency-free unit suite (no gtest needed):
 ```bash
 cmake -S . -B build -DXDJ_DESKTOP=OFF   # core + tests only, no RtMidi/libpcap
 cmake --build build --target xdj_tests
-./build/tests/xdj_tests                 # or: cd build && ctest --output-on-failure
+cd build && ctest --output-on-failure   # runs both test binaries
 ```
 
 Most of it pins down wire bytes reverse-engineered from real hardware — beat and
@@ -47,7 +47,8 @@ status packets, the tempo-master handshake, the device-number claim — because
 those offsets have no compiler to protect them. The bridge tests drive the state
 machine through fake sockets and a fake clock, and the UI tests cover the
 front-panel source gating (`firmware/src/ui_display.hpp` is header-only enough
-to compile on the host).
+to compile on the host). A second binary exercises the real POSIX socket layer,
+including the sender-address reporting the tempo-master handshake relies on.
 
 **The bridge is multi-threaded, so run the sanitizers on changes to
 `lib/prolink/`** — CI does, and ThreadSanitizer has already caught real races
