@@ -284,6 +284,10 @@ private:
 
     void push_offset_to_clock_();
     void apply_tempo_(float bpm);
+    // Stop+Start the clock at `bpm`, reseeding the tempo smoother. MIDI clock
+    // carries no bar position, so this is the only way to realign a slave's
+    // bar 1 — used by the bar-slip realign and by a manual re-sync.
+    void restart_clock_(float bpm);
 
     // Held entirely on the main thread; no concurrent access.
     bool     waiting_for_downbeat_ = false;

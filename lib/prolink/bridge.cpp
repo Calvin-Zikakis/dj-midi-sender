@@ -195,6 +195,13 @@ void Bridge::on_master_beat() {
     if (!master_mode_.load()) return;
     // Runs in the clock's tick callback, i.e. a different thread from the run
     // loop — touch only atomics here.
+    //
+    // Note this performs a blocking send from the timer callback, and the
+    // firmware's TimerEsp arms the next tick only after the callback returns,
+    // so a stall in the network stack would delay the next MIDI clock byte.
+    // Measured fine on hardware at 24 PPQN, but if jitter ever appears while
+    // acting as master, moving the send onto the bridge thread (signal it and
+    // let the run loop transmit) is the fix.
     const uint8_t beat = static_cast<uint8_t>((master_beat_pos_.load() % 4) + 1);
     master_beat_pos_.store(beat);
     const float bpm = last_known_bpm_.load();
@@ -564,11 +571,7 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     // onto the master's bar 1 with a Stop+Start.
     const bool resync_deferred = (resync_request_.load() == 1);
     if ((bar_slip_pending_realign_ || resync_deferred) && parsed->beat_in_bar == 1) {
-        clock_.stop();
-        smoothed_bpm_ = parsed->effective_bpm();
-        last_known_bpm_.store(smoothed_bpm_);
-        clock_.update_tempo_bpm(smoothed_bpm_);
-        clock_.start();
+        restart_clock_(parsed->effective_bpm());
         bar_slip_pending_realign_ = false;
         bar_slip_count_ = 0;
         resync_request_.store(0);
@@ -802,6 +805,16 @@ void Bridge::maybe_stop_on_silence(uint64_t t) {
     if (cfg_.verbose) log("stop (silence timeout)");
 }
 
+void Bridge::restart_clock_(float bpm) {
+    clock_.stop();
+    if (bpm_is_sane(bpm)) {
+        smoothed_bpm_ = bpm;             // reseed, so the first beat is on tempo
+        last_known_bpm_.store(bpm);
+        clock_.update_tempo_bpm(bpm);
+    }
+    clock_.start();
+}
+
 void Bridge::maybe_resync(uint64_t t) {
     const uint8_t req = resync_request_.load();
     if (req == 0) return;
@@ -819,10 +832,7 @@ void Bridge::maybe_resync(uint64_t t) {
     if (req == 1 && beats_live && !ignore_master_.load()) return;
 
     // Immediate (==2), or a deferred request with no live master beats.
-    clock_.stop();
-    float bpm = last_known_bpm_.load();
-    if (bpm > 0.0f) clock_.update_tempo_bpm(bpm);
-    clock_.start();
+    restart_clock_(last_known_bpm_.load());
     resync_request_.store(0);
     if (cfg_.verbose) log("resync (immediate Stop+Start)");
 }
