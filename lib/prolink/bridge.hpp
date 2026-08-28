@@ -208,6 +208,10 @@ private:
     void maybe_broadcast_master_status(uint64_t now_ms);
     // Applies a pending set_master_mode() request on the bridge thread.
     void apply_master_mode_request();
+    // The single way out of master mode. Every exit — a deck reclaiming the
+    // role, a UI release completing, the release timing out, or never having
+    // held it — goes through here, so the cleanup cannot drift apart again.
+    void leave_master_mode_();
     // A deck (device `requester`, at `requester_ip`) asked us to yield master.
     void handle_master_yield_request(uint8_t requester, uint32_t requester_ip);
     void log(const char* msg) const;
@@ -247,7 +251,14 @@ private:
     // instead of an arbitrary beat (otherwise followers realign to our grid and
     // the music shifts by 1-3 beats).
     std::atomic<uint8_t>  last_deck_beat_in_bar_{0};
-    bool                  pre_master_ignore_ = false;  // standalone before master?
+    // Whether we were standalone before taking master, so releasing restores
+    // the source the user actually chose. Atomic because the UI thread updates
+    // it via set_ignore_master() — a source picked *during* a pending release
+    // must win over the value captured when master mode began.
+    std::atomic<bool>     pre_master_ignore_{false};
+    // True once the run loop has actually entered master mode, so re-entry
+    // cannot re-capture pre_master_ignore_ from the value we ourselves forced.
+    bool                  master_applied_ = false;
     uint64_t              last_master_status_ms_ = 0;
     std::atomic<uint32_t> max_syncn_seen_{0};        // highest Syncn from peers
     int                   master_request_countdown_ = 0;  // takeover requests left to send
@@ -262,6 +273,8 @@ private:
     // Deadline for a UI-requested release to complete; if the appointed deck
     // never claims master we step down anyway. 0 = no release pending.
     uint64_t              release_deadline_ms_ = 0;
+    uint64_t              t_last_sock_err_ = 0;      // rate-limits the error log
+    uint64_t              last_waiting_log_ms_ = 0;  // ditto, for the IP wait
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};
@@ -278,6 +291,10 @@ private:
     uint64_t pending_play_change_ms_ = 0;
     bool     pending_play_state_ = false;
     uint64_t last_packet_ms_ = 0;
+    // Beat packets only. last_packet_ms_ is also refreshed by status packets,
+    // which a paused-but-connected deck keeps sending at 5 Hz — so it cannot
+    // answer "are beats still arriving?".
+    uint64_t last_beat_ms_ = 0;
     uint64_t last_status_ms_ = 0;       // last successfully parsed status packet
     uint64_t last_keepalive_ms_ = 0;
     // Device-number claim progress: 12 steps (hello x3, then claim stages

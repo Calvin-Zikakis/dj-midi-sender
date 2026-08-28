@@ -70,6 +70,16 @@ struct StatusPacket {
     }
 };
 
+// True when the buffer starts with the Pro DJ Link magic header. Command
+// packets (the handoff handshake) are dispatched on their type byte alone, so
+// they need this to avoid acting on unrelated traffic.
+bool has_prolink_magic(const uint8_t* buf, size_t len);
+
+// True when a tempo is inside the range the wire format can represent. Values
+// parsed off the network are attacker- or garbage-controlled, so anything that
+// will be re-emitted must be checked.
+bool bpm_is_sane(float bpm);
+
 // Returns nullopt if the buffer is not a well-formed packet of the given type.
 std::optional<BeatPacket>   parse_beat_packet(const uint8_t* buf, size_t len);
 std::optional<StatusPacket> parse_status_packet(const uint8_t* buf, size_t len);

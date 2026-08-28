@@ -6,9 +6,6 @@ namespace prolink {
 
 namespace {
 
-bool has_magic(const uint8_t* buf, size_t len) {
-    return len >= sizeof(MAGIC) && std::memcmp(buf, MAGIC, sizeof(MAGIC)) == 0;
-}
 
 uint16_t r16(const uint8_t* p) {
     return static_cast<uint16_t>(
@@ -35,6 +32,15 @@ void w32(uint8_t* p, uint32_t v) {
     p[3] = static_cast<uint8_t>( v        & 0xFF);
 }
 
+// Write the 20-byte null-padded device name at `off`. Beat and status packets
+// put it at 0x0B; the claim packets at 0x0C.
+void write_name(uint8_t* out, size_t off, const char* device_name) {
+    for (size_t i = 0; i < 20; ++i) {
+        if (!device_name || device_name[i] == '\0') break;
+        out[off + i] = static_cast<uint8_t>(device_name[i]);
+    }
+}
+
 void copy_device_name(char dst[21], const uint8_t* src) {
     // Field is 20 bytes ASCII, null-padded at offset 0x0B in every packet type.
     std::memcpy(dst, src, 20);
@@ -47,8 +53,20 @@ void copy_device_name(char dst[21], const uint8_t* src) {
 
 }  // namespace
 
+bool has_prolink_magic(const uint8_t* buf, size_t len) {
+    return len >= sizeof(MAGIC) && std::memcmp(buf, MAGIC, sizeof(MAGIC)) == 0;
+}
+
+// Tempo range the wire format can actually represent: BPM x100 must fit a
+// uint16, and the beat-timing predictions must stay inside a uint32. The
+// musical range is far narrower, so this is purely a safety net against
+// garbage arriving off the network.
+bool bpm_is_sane(float bpm) {
+    return bpm >= 1.0f && bpm <= 655.0f;
+}
+
 std::optional<BeatPacket> parse_beat_packet(const uint8_t* buf, size_t len) {
-    if (!has_magic(buf, len))            return std::nullopt;
+    if (!has_prolink_magic(buf, len))            return std::nullopt;
     if (len < 0x60)                      return std::nullopt;
     if (buf[0x0A] != PKT_TYPE_BEAT)      return std::nullopt;
 
@@ -64,10 +82,12 @@ std::optional<BeatPacket> parse_beat_packet(const uint8_t* buf, size_t len) {
 }
 
 std::optional<StatusPacket> parse_status_packet(const uint8_t* buf, size_t len) {
-    if (!has_magic(buf, len))            return std::nullopt;
-    if (buf[0x0A] != PKT_TYPE_STATUS)    return std::nullopt;
+    if (!has_prolink_magic(buf, len))            return std::nullopt;
+    // Length first: has_magic only guarantees 10 bytes, so checking the type
+    // byte at 0x0A before this would read past a 10-byte datagram.
     // Need to reach actual_pitch at 0x98 (4 bytes) and beat at 0xA6.
     if (len < 0xA7)                      return std::nullopt;
+    if (buf[0x0A] != PKT_TYPE_STATUS)    return std::nullopt;
 
     // Field offsets verified against beat-link (CdjStatus.java), dysentery,
     // and python-prodj-link (network/packets.py StatusPacket struct).
@@ -123,10 +143,7 @@ size_t build_keepalive_packet(uint8_t* out, size_t out_len,
     std::memcpy(out, MAGIC, sizeof(MAGIC));
     out[0x0A] = PKT_TYPE_KEEPALIVE;
     // 0x0B padding (zero)
-    for (size_t i = 0; i < 20; ++i) {
-        if (!device_name || device_name[i] == '\0') break;
-        out[0x0C + i] = static_cast<uint8_t>(device_name[i]);
-    }
+    write_name(out, 0x0C, device_name);
     out[0x20] = 0x01;          // u1 constant
     out[0x21] = 0x02;          // device_type = CDJ
     // 0x22 padding
@@ -151,8 +168,11 @@ size_t build_beat_packet(uint8_t* out, size_t out_len,
                          float bpm,
                          uint8_t beat_in_bar) {
     constexpr size_t PKT_LEN = 0x60;  // 96 bytes, matching the XDJ-XZ
-    if (out_len < PKT_LEN) return 0;
-    if (!(bpm > 0.0f))     return 0;
+    if (out_len < PKT_LEN)      return 0;
+    // Range-check rather than just >0: bpm*100 must fit a uint16 and the
+    // timing fields (up to 8 beat intervals) must fit a uint32, or the casts
+    // below are undefined and we would emit a self-inconsistent grid.
+    if (!bpm_is_sane(bpm))      return 0;
     if (beat_in_bar < 1 || beat_in_bar > 4) beat_in_bar = 1;
 
     std::memset(out, 0, PKT_LEN);
@@ -161,10 +181,7 @@ size_t build_beat_packet(uint8_t* out, size_t out_len,
 
     // Device name, 20 bytes null-padded ASCII at 0x0B (same field the parser
     // reads back).
-    for (size_t i = 0; i < 20; ++i) {
-        if (!device_name || device_name[i] == '\0') break;
-        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
-    }
+    write_name(out, 0x0B, device_name);
 
     out[0x1F] = 0x01;          // subtype / proto version (from capture)
     // 0x20 = 0x00
@@ -240,7 +257,7 @@ size_t build_status_packet(uint8_t* out, size_t out_len,
                            uint8_t master_handoff) {
     const size_t PKT_LEN = sizeof(kStatusTemplate);  // 284 bytes
     if (out_len < PKT_LEN) return 0;
-    if (!(bpm > 0.0f))     return 0;
+    if (!bpm_is_sane(bpm)) return 0;
     if (beat_in_bar < 1 || beat_in_bar > 4) beat_in_bar = 1;
 
     std::memcpy(out, kStatusTemplate, PKT_LEN);
@@ -248,10 +265,7 @@ size_t build_status_packet(uint8_t* out, size_t out_len,
 
     // Device name (0x0B, 20 bytes null-padded).
     std::memset(out + 0x0B, 0, 20);
-    for (size_t i = 0; i < 20; ++i) {
-        if (!device_name || device_name[i] == '\0') break;
-        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
-    }
+    write_name(out, 0x0B, device_name);
     out[0x21] = device_num;    // device number
     out[0x24] = device_num;    // device-number echo (subtype area)
 
@@ -283,10 +297,7 @@ size_t build_sync_control_packet(uint8_t* out, size_t out_len,
     std::memset(out, 0, PKT_LEN);
     std::memcpy(out, MAGIC, sizeof(MAGIC));  // 0x00..0x09
     out[0x0A] = PKT_TYPE_SYNC_CONTROL;       // 0x2A
-    for (size_t i = 0; i < 20; ++i) {
-        if (!device_name || device_name[i] == '\0') break;
-        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
-    }
+    write_name(out, 0x0B, device_name);
     // Payload at 0x1F: 01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 <cmd>
     uint8_t* p = out + HDR_LEN;
     p[0x00] = 0x01;
@@ -308,10 +319,7 @@ size_t build_master_handoff_request(uint8_t* out, size_t out_len,
     std::memset(out, 0, PKT_LEN);
     std::memcpy(out, MAGIC, sizeof(MAGIC));  // 0x00..0x09
     out[0x0A] = PKT_TYPE_MASTER_HANDOFF_REQ;  // 0x26
-    for (size_t i = 0; i < 20; ++i) {
-        if (!device_name || device_name[i] == '\0') break;
-        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
-    }
+    write_name(out, 0x0B, device_name);
     // Payload at 0x1F — verbatim from beat-link's VirtualCdj
     // MASTER_HANDOFF_REQUEST_PAYLOAD, with our device number written into the
     // two slots it patches (payload[2] and payload[8]):
@@ -340,10 +348,7 @@ size_t build_master_handoff_response(uint8_t* out, size_t out_len,
     std::memset(out, 0, PKT_LEN);
     std::memcpy(out, MAGIC, sizeof(MAGIC));
     out[0x0A] = PKT_TYPE_MASTER_HANDOFF_RESP;  // 0x27
-    for (size_t i = 0; i < 20; ++i) {
-        if (!device_name || device_name[i] == '\0') break;
-        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
-    }
+    write_name(out, 0x0B, device_name);
     // beat-link YIELD_ACK_PAYLOAD, our device number at [2] and [8]:
     //   01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 01
     uint8_t* p = out + HDR_LEN;
@@ -373,10 +378,7 @@ void claim_header(uint8_t* out, uint8_t type, const char* device_name) {
     std::memcpy(out, MAGIC, sizeof(MAGIC));   // 0x00..0x09
     out[0x0A] = type;
     out[0x0B] = 0x00;
-    for (size_t i = 0; i < 20; ++i) {
-        if (!device_name || device_name[i] == '\0') break;
-        out[CLAIM_NAME_OFF + i] = static_cast<uint8_t>(device_name[i]);
-    }
+    write_name(out, CLAIM_NAME_OFF, device_name);
 }
 }  // namespace
 

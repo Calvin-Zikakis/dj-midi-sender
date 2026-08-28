@@ -711,6 +711,120 @@ void test_device_claim_runs_before_keepalives() {
     }
 }
 
+
+// ── Regressions from the code audit ────────────────────────────────────────
+
+void test_own_beat_packets_are_ignored() {
+    section("we never track ourselves as master from our own echoed beats");
+    Rig r;
+    // Broadcasts loop back, so as master our own beats arrive on our own
+    // socket. Latching ourselves as current_master_ used to inflate the
+    // packet counters and leave no deck to appoint on release.
+    auto mine = beat_packet(/*dev*/ 7, 120.0f, 1);   // 7 == our device number
+    r.beat.deliver(mine.data(), mine.size());
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    CHECK_EQ(r.bridge->current_master_num(), 0);
+    CHECK_EQ(r.bridge->beat_packet_count(), 0);
+    CHECK_EQ(r.clock.starts_.load(), 0);
+}
+
+void test_garbage_tempo_never_reaches_the_clock() {
+    section("an absurd tempo from a deck cannot poison our own grid");
+    Rig r;
+    // 128 BPM track with a 2.0x pitch reads as 256; push it far higher by
+    // claiming a huge pitch. Nothing outside the sane range may be applied.
+    auto s = status_packet(3, 600.0f, 1, true);
+    // Pitch1 = 8.0x -> 4800 BPM effective.
+    s[0x8C] = 0x00; s[0x8D] = 0x80; s[0x8E] = 0x00; s[0x8F] = 0x00;
+    r.status.deliver(s.data(), s.size());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const float bpm = r.clock.bpm_.load();
+    CHECK(bpm == 0.0f || (bpm >= 1.0f && bpm <= 655.0f));
+}
+
+void test_absurd_syncn_cannot_disable_takeover() {
+    section("a bogus Syncn cannot permanently block master takeover");
+    Rig r;
+    // One packet claiming Syncn = 0xFFFFFFFF used to raise the ceiling
+    // forever, so max+1 wrapped to 0 and no deck would ever yield to us.
+    auto poison = status_packet(3, 128.0f, 1, true, 0xFFFFFFFFu);
+    r.status.deliver(poison.data(), poison.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return r.bridge->current_master_num() == 3; }));
+    auto normal = status_packet(3, 128.0f, 1, true, 9);
+    r.status.deliver(normal.data(), normal.size(), 0xC0A80105);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    CHECK(become_master(r, 3, 128.0f, 0xC0A80105));
+    // Our broadcast Syncn must be a plausible, non-zero generation.
+    CHECK(wait_for([&] {
+        for (auto& p : r.status.sent()) {
+            if (p.type() != prolink::PKT_TYPE_STATUS) continue;
+            auto parsed = prolink::parse_status_packet(p.bytes.data(), p.bytes.size());
+            if (parsed && parsed->is_master() && parsed->syncn > 0 &&
+                parsed->syncn < 0x10000000u) return true;
+        }
+        return false;
+    }));
+}
+
+void test_handoff_ack_requires_magic_and_the_right_sender() {
+    section("a stray 0x27 cannot make us assert master");
+    Rig r;
+    auto s = status_packet(3, 128.0f, 1, true, 9);
+    r.status.deliver(s.data(), s.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return r.bridge->current_master_num() == 3; }));
+    CHECK(enter_master_mode(r));
+
+    // Right type byte, no magic, wrong source: must be ignored on both counts.
+    uint8_t junk[64] = {0};
+    junk[0x0A] = prolink::PKT_TYPE_MASTER_HANDOFF_RESP;
+    r.status.deliver(junk, sizeof junk, 0xC0A80105);      // no magic
+    uint8_t ack[64];
+    const size_t an = prolink::build_master_handoff_response(ack, sizeof ack, "X", 3);
+    r.status.deliver(ack, an, 0x0A0B0C0D);                // not the master's IP
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    CHECK(!r.bridge->is_tempo_master());
+
+    // The real thing, from the master, is accepted.
+    r.status.deliver(ack, an, 0xC0A80105);
+    CHECK(wait_for([&] { return r.bridge->is_tempo_master(); }));
+}
+
+void test_release_without_handoff_restores_the_source() {
+    section("releasing master we never held still restores the source");
+    Rig r;
+    // No master is ever learned, so the handoff cannot complete — the path
+    // that used to leave the box silently standalone while the panel said
+    // otherwise.
+    r.bridge->set_master_mode(true);
+    CHECK(wait_for([&] { return r.bridge->ignore_master(); }));
+    r.bridge->set_master_mode(false);
+    CHECK(wait_for([&] { return !r.bridge->master_mode(); }));
+    // Back to following decks, not stuck ignoring them.
+    CHECK(wait_for([&] { return !r.bridge->ignore_master(); }));
+
+    auto s = status_packet(3, 132.0f, 1, true);
+    r.status.deliver(s.data(), s.size());
+    CHECK(wait_for([&] { return std::abs(r.clock.bpm_.load() - 132.0f) < 0.01f; }));
+}
+
+void test_source_chosen_during_release_wins() {
+    section("a source picked during a pending release is not overwritten");
+    Rig r;
+    auto s = status_packet(3, 128.0f, 1, true, 9);
+    r.status.deliver(s.data(), s.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return r.bridge->current_master_num() == 3; }));
+    CHECK(become_master(r, 3, 128.0f, 0xC0A80105));
+
+    // Release, then immediately choose standalone. When the deck finally
+    // claims master, the stale pre-master value must not revert that choice.
+    CHECK(release_master(r));
+    r.bridge->set_ignore_master(true);
+    auto reclaimed = status_packet(3, 128.0f, 1, true, 12);
+    r.status.deliver(reclaimed.data(), reclaimed.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return !r.bridge->master_mode(); }));
+    CHECK(r.bridge->ignore_master());
+}
 }  // namespace
 
 int bridge_tests_main() {
@@ -745,6 +859,13 @@ int bridge_tests_main() {
     test_reclaiming_master_clears_a_pending_release();
 
     test_device_claim_runs_before_keepalives();
+
+    test_own_beat_packets_are_ignored();
+    test_garbage_tempo_never_reaches_the_clock();
+    test_absurd_syncn_cannot_disable_takeover();
+    test_handoff_ack_requires_magic_and_the_right_sender();
+    test_release_without_handoff_restores_the_source();
+    test_source_chosen_during_release_wins();
 
     std::printf("\nbridge: %d checks, %d failure%s\n", g_checks, g_failures,
                 g_failures == 1 ? "" : "s");
