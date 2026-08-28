@@ -145,4 +145,31 @@ size_t build_master_handoff_response(uint8_t* out, size_t out_len,
                                      const char* device_name,
                                      uint8_t device_num);
 
+// ── Device-number claim handshake (port 50000) ─────────────────────────────
+// Before sending keep-alives, a real player negotiates ownership of its device
+// number: hello (0x0a) x3, then three claim stages (0x00, 0x02, 0x04) x3 each,
+// ~300 ms apart, all broadcast. Skipping this and simply squatting on a number
+// upsets other gear — an XDJ-XZ stops letting you pass master between its own
+// decks. Layouts from beat-link's VirtualCdj claim byte templates; the device
+// name lives at 0x0C (20 bytes) in these packets, not 0x0B.
+// All return the bytes written, or 0 if the buffer is too small.
+
+// Stage 0 — "hello", announces our existence. 38 bytes.
+size_t build_announce_hello(uint8_t* out, size_t out_len, const char* device_name);
+
+// Stage 1 (type 0x00) — first claim broadcast. `counter` is 1..3. 44 bytes.
+size_t build_claim_stage1(uint8_t* out, size_t out_len, const char* device_name,
+                          const uint8_t mac[6], uint8_t counter);
+
+// Stage 2 (type 0x02) — claims a specific number, with our network location.
+// `auto_assign` picks the number for us (we always claim a specific one).
+// `ip_host_order` is our IPv4. 50 bytes.
+size_t build_claim_stage2(uint8_t* out, size_t out_len, const char* device_name,
+                          const uint8_t mac[6], uint32_t ip_host_order,
+                          uint8_t device_num, uint8_t counter, bool auto_assign);
+
+// Stage 3 (type 0x04) — final confirmation of the claim. 38 bytes.
+size_t build_claim_stage3(uint8_t* out, size_t out_len, const char* device_name,
+                          uint8_t device_num, uint8_t counter);
+
 }  // namespace prolink
