@@ -300,8 +300,8 @@ size_t build_master_handoff_request(uint8_t* out, size_t out_len,
                                     const char* device_name,
                                     uint8_t device_num) {
     constexpr size_t HDR_LEN = 0x1F;                 // magic + type + 20B name
-    constexpr size_t PAYLOAD_LEN = 10;
-    constexpr size_t PKT_LEN = HDR_LEN + PAYLOAD_LEN;  // 0x29 = 41 bytes
+    constexpr size_t PAYLOAD_LEN = 9;
+    constexpr size_t PKT_LEN = HDR_LEN + PAYLOAD_LEN;  // 40 bytes
     if (out_len < PKT_LEN) return 0;
 
     std::memset(out, 0, PKT_LEN);
@@ -311,21 +311,20 @@ size_t build_master_handoff_request(uint8_t* out, size_t out_len,
         if (!device_name || device_name[i] == '\0') break;
         out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
     }
-    // Payload at 0x1F. Structure mirrors the real command packets we captured
-    // (e.g. the mixer 0x03: `01 <dev> <subtype> 00 <len_r:2> <body...>`), with
-    // the field values from Deep Symmetry's 0x26 diagram (subtype 0x20,
-    // len_r = 0x0004, body = the requesting device number as a uint32 BE).
+    // Payload at 0x1F — verbatim from beat-link's VirtualCdj
+    // MASTER_HANDOFF_REQUEST_PAYLOAD, with our device number written into the
+    // two slots it patches (payload[2] and payload[8]):
+    //   01 00 <dev> 00 04 00 00 00 <dev>
     uint8_t* p = out + HDR_LEN;
-    p[0x00] = 0x01;          // constant
-    p[0x01] = device_num;    // sender's device number
-    p[0x02] = 0x20;          // subtype
+    p[0x00] = 0x01;
+    p[0x01] = 0x00;
+    p[0x02] = device_num;
     p[0x03] = 0x00;
-    p[0x04] = 0x00;          // len_r hi
-    p[0x05] = 0x04;          // len_r lo (4 bytes follow)
+    p[0x04] = 0x04;          // len_r low byte: 4 bytes follow
+    p[0x05] = 0x00;
     p[0x06] = 0x00;
     p[0x07] = 0x00;
-    p[0x08] = 0x00;
-    p[0x09] = device_num;    // body: requesting device number
+    p[0x08] = device_num;
     return PKT_LEN;
 }
 

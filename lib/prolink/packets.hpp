@@ -123,10 +123,12 @@ size_t build_sync_control_packet(uint8_t* out, size_t out_len,
                                  uint8_t cmd);
 
 // Build a tempo-master takeover request (type 0x26, port 50001) — sent unicast
-// to the CURRENT master to ask it to yield. Format from Deep Symmetry sync.adoc:
-// header + `01 20 00 <dev> 00 04 00 00 00 <dev>`, len_r = 0x0004. The master
-// replies with a 0x27 response and sets its Mh to our device number. Returns
-// bytes written (41) or 0. (Byte offsets for <dev> to be confirmed live.)
+// to the CURRENT master to ask it to yield. Payload taken verbatim from
+// beat-link's VirtualCdj.MASTER_HANDOFF_REQUEST_PAYLOAD:
+// header + `01 00 <dev> 00 04 00 00 00 <dev>` (payload at 0x1f). The master
+// replies with a 0x27 response **on port 50002** and sets its Mh to our device
+// number. Note beat-link only replies if it has already received status packets
+// from the requester, so keep broadcasting status. Returns 40 or 0.
 size_t build_master_handoff_request(uint8_t* out, size_t out_len,
                                     const char* device_name,
                                     uint8_t device_num);

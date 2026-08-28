@@ -214,6 +214,13 @@ void Bridge::run() {
         if (n > 0) {
             last_status_src_ip_ = status_src;
             if (cb_.on_raw_datagram) cb_.on_raw_datagram(PORT_STATUS, buf, static_cast<size_t>(n));
+            // The master's yield acknowledgement (0x27) arrives here, on the
+            // status port — not on 50001 where we sent the request.
+            if (n > 0x0A && buf[0x0A] == PKT_TYPE_MASTER_HANDOFF_RESP &&
+                master_mode_.load() && !master_confirmed_.load()) {
+                master_confirmed_.store(true);
+                log("master yield ACK (0x27) received — asserting mm=1");
+            }
             handle_status_packet(buf, static_cast<size_t>(n));
         }
 
