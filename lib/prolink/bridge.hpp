@@ -182,6 +182,12 @@ public:
     bool keep_playing() const { return keep_playing_.load(); }
     bool holding() const { return holding_.load(); }
 
+    // True when the deck we are following is actually playing — i.e. a deck is
+    // genuinely driving the clock. Distinct from is_playing(), which reports
+    // OUR clock and stays true right through a hold, so it cannot answer
+    // "has a deck come back?".
+    bool master_deck_playing() const { return master_deck_playing_.load(); }
+
     // Set the manual tempo absolutely (classic tap-tempo). nudge_manual_bpm()
     // is the relative version (spin fine-tune).
     void set_manual_bpm(float bpm);
@@ -327,6 +333,8 @@ private:
     // Held entirely on the main thread; no concurrent access.
     bool     waiting_for_downbeat_ = false;
     bool     last_master_playing_  = false;
+    // Atomic mirror of the above, for readers on the UI thread.
+    std::atomic<bool> master_deck_playing_{false};
     uint64_t pending_play_change_ms_ = 0;
     bool     pending_play_state_ = false;
     uint64_t last_packet_ms_ = 0;

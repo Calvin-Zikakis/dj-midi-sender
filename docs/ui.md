@@ -125,6 +125,11 @@ slot:
 | **no** | Holds the tempo locally — effectively standalone until the decks come back, then re-locks to them. Nothing on the link changes |
 | **yes** | Holds the tempo *and* claims `sync master`, so a deck that restarts with sync on locks back to the box instead of dragging the gear to its own tempo |
 
+When the role goes back to a deck, the box restores whatever source you had
+selected before it borrowed master — a deliberate `player 3` pin survives the
+box covering a track change. Choosing a source yourself at any point
+supersedes that, so it can never restore something stale.
+
 The claim fires **once per stop episode**, and only re-arms once a deck is
 genuinely driving the clock again. Without that latch, a DJ reclaiming master
 while the decks are still stopped would drop the box back to `follower

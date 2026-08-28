@@ -391,6 +391,32 @@ void test_keep_playing_holds_when_the_deck_stops() {
     CHECK(r.clock.starts_.load() == 1);
 }
 
+void test_master_deck_playing_tracks_the_deck_not_our_clock() {
+    section("master_deck_playing follows the deck, not our own clock");
+    Rig r;
+    auto play = status_packet(1, 128.0f, 1, true);
+    auto down = beat_packet(1, 128.0f, 1);
+    r.status.deliver(play.data(), play.size());
+    r.beat.deliver(down.data(), down.size());
+    for (int i = 0; i < 4; ++i) {
+        r.status.deliver(play.data(), play.size());
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK(wait_for([&] { return r.bridge->master_deck_playing(); }));
+    r.bridge->set_keep_playing(true);
+
+    // The deck stops. Our clock keeps running, so is_playing() stays true —
+    // which is exactly why the UI cannot use it to ask "is a deck back yet?".
+    auto paused = status_packet(1, 128.0f, 1, true, 5, 0xFF, /*playing*/ false);
+    for (int i = 0; i < 4; ++i) {
+        r.status.deliver(paused.data(), paused.size());
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK(wait_for([&] { return !r.bridge->master_deck_playing(); }));
+    CHECK(r.bridge->holding());
+    CHECK(r.bridge->is_playing());   // our clock is still going
+}
+
 void test_keep_playing_holds_through_silence() {
     section("keep playing: a link gone quiet holds the clock too");
     Rig r;   // silence_timeout_ms = 300
@@ -1008,6 +1034,7 @@ int bridge_tests_main() {
     test_a_link_blip_does_not_stop_the_clock();
     test_a_long_link_outage_still_stops();
     test_keep_playing_holds_when_the_deck_stops();
+    test_master_deck_playing_tracks_the_deck_not_our_clock();
     test_keep_playing_holds_through_silence();
     test_keep_playing_off_still_stops();
     test_taking_the_master_role_clears_the_hold();
