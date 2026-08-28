@@ -349,20 +349,18 @@ Where `t` is the next pending tick index. With `offset = 0` this is the
 no-offset case (catch up by `t` ticks). With `offset > 0` (lead), the
 target moves earlier, so `err` becomes more negative.
 
-## Becoming the tempo master (in progress)
+## Becoming the tempo master (working)
 
-The bridge is a follower: it reads the XZ's grid and emits MIDI clock. The
-inverse — the box as Pro DJ Link **tempo master**, so CDJs sync *to* it — is
-tracked in ROADMAP.md and this branch. It has several layers, in dependency
-order:
+The bridge started as a follower. It can now also act as the Pro DJ Link
+**tempo master**, so CDJs sync *to* the box — verified live against an XDJ-700
+and an XDJ-XZ. Behind `Bridge::set_master_mode()`:
 
-1. **Beat-packet emitter** (done). `build_beat_packet()` in
-   [`packets.cpp`](../lib/prolink/packets.cpp) constructs a type-`0x28` beat
-   packet advertising our own grid, byte-symmetric to the parser. Validated:
-   built with the capture's parameters it reproduces a real XDJ-XZ beat packet
-   byte-for-byte except sub-millisecond rounding on one timing field.
+1. **Beat-packet emitter.** `build_beat_packet()` constructs a type-`0x28`
+   packet advertising our own grid, byte-symmetric to the parser. Built with a
+   capture's parameters it reproduces a real XDJ-XZ beat packet byte-for-byte
+   except sub-millisecond rounding on one timing field.
 
-   The six timing-prediction fields (`0x24`–`0x38`) were derived empirically
+   The six timing-prediction fields (`0x24`-`0x38`) were derived empirically
    from `captures/xdj-xz-export-mode.pcapng`. As multiples of the beat interval
    (`60000 / bpm`), indexed by `beat_in_bar` *b*:
 
@@ -370,87 +368,59 @@ order:
    |-------|--------|----------|
    | next beat  | `0x24` | 1 |
    | 2nd beat   | `0x28` | 2 |
-   | next bar   | `0x2C` | 5 − *b* |
+   | next bar   | `0x2C` | 5 - *b* |
    | 4th beat   | `0x30` | 4 |
-   | 2nd bar    | `0x34` | 9 − *b* |
+   | 2nd bar    | `0x34` | 9 - *b* |
    | 8th beat   | `0x38` | 8 |
 
-2. **Broadcaster orchestration** (next). Broadcast beat packets on port 50001,
-   one per beat, phase-aligned to the box's own clock so the MIDI clock and the
-   DJ-Link grid share one beat source.
+2. **Status-packet emitter.** `build_status_packet()` starts from a real
+   XDJ-700 *master* status packet captured live and overwrites the dynamic and
+   master fields: flags `0x89` bit 5, `Mm` `0x9E`, `Mh` `0x9F`, `Syncn` `0x84`,
+   tempo `0x92`, unity pitch, and `beat_in_bar` `0xA6`. Broadcast at ~5 Hz;
+   beat packets go out once per clock beat via `Clock::set_on_beat()`, so the
+   MIDI clock and the DJ-Link grid share one beat source.
 
-3. **Status-packet emitter + master flag** (next). Followers take tempo and the
-   master designation from status packets. A live capture (XDJ-700 as master +
-   XDJ-XZ) now gives us a **real master status packet as a byte template** —
-   the gap the offline captures had — so this becomes template-based like the
-   beat packet. Set the master fields (`0x89` bit 5, `0x9E`=`0x01`), our BPM at
-   `0x92`, `Mv`=`0x8000`, unity pitch, and beat at `0xA6`; keep the rest.
+3. **The takeover handshake.** Claiming `Mm` alone does nothing — an existing
+   master must be asked to yield. Payloads are taken verbatim from beat-link's
+   `VirtualCdj` (`MASTER_HANDOFF_REQUEST_PAYLOAD` / `YIELD_ACK_PAYLOAD`); every
+   command packet is header (magic + type at `0x0A` + 20-byte name at `0x0B`)
+   with the payload at **`0x1F`**.
 
-4. **Master-takeover handshake** (in progress; needs one more capture). The
-   full broadcast path is built — `build_status_packet()` from the live master
-   template, a `MasterBroadcaster` in `Bridge` that emits beat packets per clock
-   beat and status packets at ~5 Hz with the master fields, `Syncn` tracked from
-   peers and broadcast as `max+1`, all behind `Bridge::set_master_mode()`
-   (device 4). But a bare master claim does **not** dislodge an existing master.
+   | | type | payload (`<dev>` = sender) | sent to |
+   |---|---|---|---|
+   | request | `0x26` | `01 00 <dev> 00 04 00 00 00 <dev>` | master's IP, **port 50001** |
+   | response (ACK) | `0x27` | `01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 01` | requester's IP, **port 50002** |
 
-   The handoff *dance* was captured live (XDJ-700 <-> XDJ-XZ, see
-   `docs/local/handoff-dance.txt`):
+   Note the asymmetry: the request goes to 50001 but the ACK comes back on
+   **50002**, so the response is read off the status socket.
 
-   1. the **current master sets its `Mh` (0x9F) to the incoming device's
-      number** — this is the yield, triggered by the new deck's request;
-   2. the **new device asserts `mm=1` (0x9E)**, keeping its `Syncn`;
-   3. the **old master drops `mm` to 0 and bumps `Syncn` to new+1**.
+   Taking master (box -> deck), each step verified live:
 
-   Steps 2-3 we can reproduce. Step 1's *trigger* is a **unicast** command to
-   the current master — which is why the box (not being the master) never saw it
-   in two live handoff captures (`docs/local/handoff-dance.txt`; only unrelated
-   periodic type-`0x03` broadcasts appeared). We do **not** need to sniff it:
-   Deep Symmetry's beat-link publishes the format. The request is a
-   **`SYNC_CONTROL`** packet:
+   1. box unicasts `0x26` to the current master (its IP is learned from its
+      status packets; `IUdpSocket::recv` returns the sender address);
+   2. master replies `0x27` and sets its `Mh` to our device number;
+   3. box asserts `Mm=1` with `Syncn = max(peers)+1`;
+   4. old master drops `Mm`, resets `Mh` to `0xFF`, bumps `Syncn`.
 
-   - type `0x2a` at offset `0x0a`; header is magic(10) + type + name(20 @ `0x0b`),
-     **payload at `0x1f`**;
-   - become-master payload (13 B): `01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 01`
-     (the trailing `0x01` is the "become master" command; `0x10`/`0x20` are
-     sync on/off), `<dev>` = our device number;
-   - sent **unicast to the current master's IP on port 50001**.
+   Until step 2 lands the box broadcasts as an ordinary synced follower
+   (`Mm=0`) and keeps retrying — it never simply declares itself master.
 
-   `build_sync_control_packet()` emits the `0x2a` command and the bridge fires
-   a burst of it on `set_master_mode(true)`. Live result: **the XDJ-700 does
-   not react** to a broadcast `0x2a` "become master" — expected, since
-   `SYNC_CONTROL` (`0x2a`) commands a *target* to become master (not "make me
-   master") and is unicast.
+   **Giving it back** is the mirror image, and always honored so a DJ can
+   reclaim control: on an inbound `0x26` the box ACKs with `0x27`, advertises
+   the requester in its `Mh`, and once that device asserts master it drops
+   `Mm`, leaves master mode, and resumes following.
 
-   **The takeover IS solved and published** (Deep Symmetry, sync.adoc /
-   `sync.html`; beat-link implemented a virtual CDJ becoming master in 2018 —
-   an earlier note here wrongly concluded otherwise). No promiscuous capture is
-   needed. The sequence:
+   A real deck-to-deck handoff and both directions of the box's handoff are
+   recorded in `docs/local/handoff-dance.txt`.
 
-   1. The taker sends a **`MASTER_HANDOFF_REQUEST` (type `0x26`)** **unicast to
-      the current master on port 50001**, carrying its own device number `D`,
-      `len_r = 0x0004`. Shape: `<header> 26 … D … 00 04 00 00 00 D`.
-   2. The current master replies **`MASTER_HANDOFF_RESPONSE` (type `0x27`)**
-      unicast to the taker (`len_r = 0x0008`, trailing `… 00 00 00 01`) and, in
-      its status packets, sets `Mh` (`0x9F`) to the taker's device number.
-   3. The taker asserts `mm=1` (`0x9E`) + flag bit 5 in its status.
-   4. The old master drops `mm`, sets `Mh` back to `0xFF`, and bumps `Syncn`
-      past all peers.
+   Practical notes: a takeover claims a **real deck number** (`MASTER_DEVICE_NUM`,
+   default 4) rather than the follower-mode vCDJ number 7, and the box must be
+   broadcasting status before requesting — beat-link only ACKs a requester it
+   has already seen status from.
 
-   Steps 2-4 are exactly the dance captured in `docs/local/handoff-dance.txt`.
-
-   **Implemented** (untested on hardware): `build_master_handoff_request()`
-   emits the `0x26` packet; `IUdpSocket::recv` now returns the sender's source
-   IP so the bridge tracks the current master's IP (`master_ip_`); on
-   `set_master_mode(true)` it unicasts a burst of `0x26` requests to the master
-   on port 50001, then asserts `mm=1` + `Syncn=max+1` and broadcasts its grid.
-   **Testable on an ordinary switch — no hub/mirror needed**, since the box
-   sends the request and reads the broadcast status result. Open items to
-   confirm live: the exact byte offset of `D` in the `0x26` payload, whether we
-   should wait for the `0x27`/`Mh` acknowledgement before asserting `mm=1`, and
-   the device number to claim.
-
-5. **Front-panel Master mode** — a toggle that makes the box the tempo
-   authority, using the existing free-run / manual-BPM tempo as its grid.
+4. **Front-panel Master mode** — a toggle that makes the box the tempo
+   authority, using the existing free-run / manual-BPM tempo as its grid. Not
+   yet wired to the UI; enable with `-DMASTER_TEST` for bench testing.
 
 ## Master device tracking
 
