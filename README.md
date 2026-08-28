@@ -80,8 +80,9 @@ dj-midi-sender/
 │       ├── ui_display.*        # SSD1306 status screen (U8g2, hardware I2C)
 │       ├── ui_input.*          # EC11 encoder + nudge/tap buttons
 │       └── main.cpp            # ethernet bring-up + wiring it all together
+├── tests/                      # unit tests for the core (no external deps)
 ├── captures/                   # canonical pcapng captures for offline replay
-└── docs/                       # architecture (protocol/PLL) + hardware (board/wiring)
+└── docs/                       # architecture (protocol/PLL), hardware (board/wiring), ui (front panel)
 ```
 
 `lib/prolink/` is pure C++17 with no platform headers beyond `<cstdint>`,
@@ -162,8 +163,8 @@ CLI flags:
 --midi-port <name>      MIDI output port (default: first available)
 --list-midi             List MIDI output ports and exit
 --bpm <float>           Fallback BPM when no valid signal (default 120.0)
---device-num <n>        Virtual CDJ device number (default 7)
---gain <n>              PLL phase correction gain divisor (default 16)
+--device-num <n>        Virtual CDJ device number (default 5)
+--gain <n>              PLL phase correction gain divisor (default 32)
 --clock-offset-ms <f>   Lead the beat by N ms (chain latency). Persisted per port.
 --grid-offset-ms <f>    Per-track beat-grid offset (session only).
 --no-vcdj               Skip the virtual-CDJ announce (beat packets only)
@@ -247,10 +248,10 @@ and a **Settings menu**.
 - **Nudge - / +** — trim the clock offset by the configured *Offset step*;
   **hold** to auto-repeat with acceleration. Offset persists to NVS (+30 ms
   first-boot fallback).
-- **Tap** (in Sync/Free) — **beat re-sync**: re-emits MIDI Start so a slave
-  whose transport was stopped/started locally snaps back to bar alignment. In
-  Sync it lands on the master's next downbeat; in Free it restarts immediately.
-  OLED flashes `RSYN`.
+- **Tap** (while following a deck) — **beat re-sync**: re-emits MIDI Start so a
+  slave whose transport was stopped/started locally snaps back to bar
+  alignment, landing on the master's next downbeat. OLED flashes `RSYN`. Where
+  the box owns the tempo (`sync master` / `off`), tap is tap-tempo instead.
 - **Encoder push** -> Source-select. **Hold both nudges ~1 s** -> Settings menu.
 
 **Source-select** (`follower master / player 1-4 / sync master / off`) — **spin** moves a `>` cursor
@@ -271,20 +272,17 @@ It takes over **at the tempo it was already following**, so grabbing master
 mid-set doesn't lurch the music; **spin** to nudge from there.
 
 A DJ can always take it back: press MASTER on a deck and the box acknowledges,
-steps down, and returns to `auto`. Selecting a different source also releases
-it — the box appoints a deck as master on the way out, so the link is never
-left without one.
+steps down, and returns to `follower master`. Selecting a different source also
+releases it — the box appoints a deck as master on the way out, so the link is
+never left without one.
 
 **Standalone (`off`)** — no DJ-Link needed. The clock cold-starts on a manual
-tempo (OLED shows `OFF`). **Tap in rhythm** = tap-tempo (averages the last 8
-taps); **spin** = fine-tune by the *Tap-fine* step (default 0.1 BPM).
-
-**Free mode** (player source) — keeps clocking when the deck stops; **hold tap +
-spin** trims BPM live (`MAN`). A master beat re-syncs.
+tempo. **Tap in rhythm** = tap-tempo (averages the last 8 taps); **spin** =
+adjust BPM by the *BPM step*.
 
 **Settings menu** — spin to scroll, push to edit, spin to change, push to save,
-tap to back. All persisted to NVS: **Mode** (Sync/Free), **BPM step**
-(0.1/0.5/1/5), **Fine step** (0.1/0.25/0.5/1), **Offset step** (0.1/0.5/1 ms).
+tap to back. All persisted to NVS: **Act as player** (yes/no — unlocks
+`sync master`), **BPM step** (0.1/0.25/0.5/1), **Offset step** (0.1/0.5/1 ms).
 
 Full gesture-by-gesture reference, including how each control changes meaning
 between follower and tempo-owner sources: **[docs/ui.md](docs/ui.md)**.

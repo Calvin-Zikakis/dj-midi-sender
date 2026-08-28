@@ -419,7 +419,9 @@ and an XDJ-XZ. Behind `Bridge::set_master_mode()`:
    has already seen status from.
 
 4. **Front-panel Master mode** — selectable from the clock-source list as
-   `mstr` (the list reads `auto / P1-P4 / mstr / off`). Selecting it requests
+   `sync master` (the list reads `follower master / player 1-4 / sync master /
+   off`, with `sync master` shown only when the "Act as player" setting is on).
+   Selecting it requests
    the handoff; selecting anything else releases the role, appointing a deck via
    `SYNC_CONTROL` on the way out so the link is never left without a master
    (with a 3 s fallback if the appointed deck never claims it). Taking master
