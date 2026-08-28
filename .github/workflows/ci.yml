@@ -92,11 +92,14 @@ jobs:
           sudo apt-get install -y librtmidi-dev libpcap-dev libglfw3-dev
 
       - name: Configure
+        # GUI on: gui_imgui.cpp is only compiled in this configuration, so
+        # building without it would leave the visualizer untested. ImGui itself
+        # is pulled in by FetchContent.
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DXDJ_DESKTOP=ON \
-            -DXDJ_GUI=OFF
+            -DXDJ_GUI=ON
 
       - name: Build
         run: cmake --build build --parallel
