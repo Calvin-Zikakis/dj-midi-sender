@@ -258,8 +258,12 @@ private:
     uint64_t last_claim_ms_ = 0;
     bool     claim_done_ = false;
     uint8_t  idle_device_num_ = 0;   // number to return to when not master
-    // Re-run the claim handshake for a new device number.
-    void restart_device_claim(uint8_t device_num);
+    uint8_t  claim_repeats_ = 3;     // packets per stage (3 at boot, 1 when fast)
+    uint16_t claim_interval_ms_ = 300;
+    // Re-run the claim handshake for a new device number. `fast` sends one
+    // packet per stage at a tighter interval (~0.6 s instead of ~3.6 s) — used
+    // for mid-set master switches, where a multi-second stall is unusable.
+    void restart_device_claim(uint8_t device_num, bool fast = true);
     float    smoothed_bpm_ = 0.0f;      // EMA-filtered tempo (0 = bootstrap)
 
     // Bar-alignment tracking. If a beat packet is dropped, the master's

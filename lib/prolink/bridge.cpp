@@ -603,32 +603,37 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     }
 }
 
-void Bridge::restart_device_claim(uint8_t device_num) {
+void Bridge::restart_device_claim(uint8_t device_num, bool fast) {
     if (idle_device_num_ == 0) idle_device_num_ = cfg_.device_num;  // remember home
     if (cfg_.device_num == device_num) return;
-    cfg_.device_num = device_num;
-    claim_step_     = 0;
-    last_claim_ms_  = 0;
-    claim_done_     = false;
+    cfg_.device_num     = device_num;
+    claim_step_         = 0;
+    last_claim_ms_      = 0;
+    claim_done_         = false;
+    claim_repeats_      = fast ? 1 : 3;
+    claim_interval_ms_  = fast ? 150 : 300;
     char m[80];
-    std::snprintf(m, sizeof(m), "re-claiming as device %u", device_num);
+    std::snprintf(m, sizeof(m), "re-claiming as device %u%s", device_num,
+                  fast ? " (fast)" : "");
     log(m);
 }
 
 void Bridge::step_device_claim(uint64_t t) {
     if (claim_done_ || !cfg_.send_vcdj_announce) return;
-    if (last_claim_ms_ != 0 && (t - last_claim_ms_) < 300) return;
+    if (last_claim_ms_ != 0 && (t - last_claim_ms_) < claim_interval_ms_) return;
     last_claim_ms_ = t;
 
     uint8_t pkt[64];
     size_t  n = 0;
-    const uint8_t i = static_cast<uint8_t>((claim_step_ % 3) + 1);  // counter 1..3
+    const uint8_t reps  = claim_repeats_ ? claim_repeats_ : 1;
+    const uint8_t stage = static_cast<uint8_t>(claim_step_ / reps);   // 0..3
+    const uint8_t i     = static_cast<uint8_t>((claim_step_ % reps) + 1);  // counter
 
-    if (claim_step_ < 3) {
+    if (stage == 0) {
         n = build_announce_hello(pkt, sizeof(pkt), cfg_.device_name);
-    } else if (claim_step_ < 6) {
+    } else if (stage == 1) {
         n = build_claim_stage1(pkt, sizeof(pkt), cfg_.device_name, cfg_.mac, i);
-    } else if (claim_step_ < 9) {
+    } else if (stage == 2) {
         n = build_claim_stage2(pkt, sizeof(pkt), cfg_.device_name, cfg_.mac,
                                cfg_.local_ip, cfg_.device_num, i,
                                /*auto_assign*/ false);
@@ -638,7 +643,7 @@ void Bridge::step_device_claim(uint64_t t) {
     }
     if (n) keepalive_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_KEEPALIVE);
 
-    if (++claim_step_ >= 12) {
+    if (++claim_step_ >= 4 * reps) {
         claim_done_ = true;
         char m[80];
         std::snprintf(m, sizeof(m), "device-number claim complete for device %u",
