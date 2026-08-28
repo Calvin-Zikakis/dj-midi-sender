@@ -25,17 +25,30 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_oled(
 // buffer against what the panel already has and skip the transfer when they
 // match. Comparing the buffer rather than the snapshot means this stays correct
 // no matter which fields the renderer starts or stops using.
-uint8_t g_last_frame[1024];
-bool    g_have_last_frame = false;
+uint8_t  g_last_frame[1024];
+bool     g_have_last_frame = false;
+uint32_t g_frames_skipped  = 0;
+
+// Resend even an unchanged frame this often. Skipping transfers assumes the
+// panel still holds what we last sent, which a glitch on the I2C bus or a
+// browned-out display would break — and with a static screen nothing would ever
+// refresh it. At 25 fps this is a redraw roughly every two seconds, which costs
+// nothing and makes the display self-healing.
+constexpr uint32_t kForceRedrawEvery = 50;
 
 void send_if_changed(U8G2& oled) {
     const size_t len = static_cast<size_t>(oled.getBufferTileHeight()) * 8u *
                        static_cast<size_t>(oled.getBufferTileWidth());
     uint8_t* buf = oled.getBufferPtr();
     if (len <= sizeof(g_last_frame)) {
-        if (g_have_last_frame && std::memcmp(buf, g_last_frame, len) == 0) return;
+        if (g_have_last_frame && g_frames_skipped < kForceRedrawEvery &&
+            std::memcmp(buf, g_last_frame, len) == 0) {
+            ++g_frames_skipped;
+            return;
+        }
         std::memcpy(g_last_frame, buf, len);
         g_have_last_frame = true;
+        g_frames_skipped  = 0;
     }
     oled.sendBuffer();
 }

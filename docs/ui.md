@@ -125,7 +125,9 @@ three settings persist to NVS.
   redrawing an unchanged screen would keep the bus busy continuously. The
   renderer compares the composed buffer against what the panel already holds and
   skips identical frames. Comparing the buffer rather than the snapshot keeps
-  that correct regardless of which fields the renderer uses.
+  that correct regardless of which fields the renderer uses, and an unchanged
+  frame is resent every couple of seconds anyway so a glitched panel heals
+  itself instead of staying stale forever.
 - **Taking master is opt-in, not one spin away.** "Act as player" gates it, so
   the destructive option is absent from the list until you have said you want
   the box on the link as a player.
