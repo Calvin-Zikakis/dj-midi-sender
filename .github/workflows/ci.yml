@@ -24,7 +24,7 @@ jobs:
           - { os: ubuntu-latest, compiler: clang, cc: clang, cxx: clang++ }
           - { os: macos-latest,  compiler: clang, cc: clang, cxx: clang++ }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         env:
@@ -53,7 +53,7 @@ jobs:
       matrix:
         sanitizer: [address, thread, undefined]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         env:
@@ -84,7 +84,7 @@ jobs:
     name: Desktop build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -110,7 +110,7 @@ jobs:
       matrix:
         env: [waveshare_esp32s3_eth, diag]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
