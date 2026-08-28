@@ -106,6 +106,11 @@ public:
     // Asynchronously requests the run loop to exit.
     void stop();
 
+    // True while run()'s poll loop is live. run() sets this on entry, so a
+    // stop() issued before the loop starts would be lost — wait for this
+    // before stopping a freshly spawned bridge thread.
+    bool running() const { return running_.load(); }
+
     // Two-axis lead-time compensation. The scheduler sees only the sum.
     //
     //   clock_offset_ms — physical chain latency (USB → slave). Per output
@@ -125,7 +130,7 @@ public:
     // whoever holds the master flag; 1..6 = pin to that device number.
     // Mirrors cfg.force_master_device but settable live.
     void    set_force_master_device(uint8_t device_num);
-    uint8_t force_master_device() const { return cfg_.force_master_device; }
+    uint8_t force_master_device() const { return force_master_device_.load(); }
 
     // Free-run mode. When enabled, the bridge does NOT stop the clock when the
     // master pauses or the link goes silent — it latches the last tempo and
@@ -201,6 +206,8 @@ private:
     void maybe_stop_on_silence(uint64_t now_ms);
     void maybe_resync(uint64_t now_ms);
     void maybe_broadcast_master_status(uint64_t now_ms);
+    // Applies a pending set_master_mode() request on the bridge thread.
+    void apply_master_mode_request();
     // A deck (device `requester`, at `requester_ip`) asked us to yield master.
     void handle_master_yield_request(uint8_t requester, uint32_t requester_ip);
     void log(const char* msg) const;
@@ -223,8 +230,18 @@ private:
     std::atomic<uint8_t>  resync_request_{0};
     // Tempo-master mode broadcasting.
     std::atomic<bool>     master_mode_{false};
-    uint8_t               master_beat_in_bar_ = 0;   // 0 = not started; 1..4
-    std::atomic<uint8_t>  master_beat_pos_{0};       // same, readable by the UI
+    // Pending set_master_mode() request: 0 = none, 1 = enter, 2 = release.
+    // Set from the UI thread, consumed by the run loop.
+    std::atomic<uint8_t>  master_mode_request_{0};
+    // Our bar position (1..4) while master. Written from the clock thread,
+    // read by the run loop and the UI, so it must be atomic.
+    std::atomic<uint8_t>  master_beat_pos_{0};
+    // The device number we currently present on the link. cfg_.device_num is
+    // the configured idle number; this follows the claim handshake and is read
+    // from several threads.
+    std::atomic<uint8_t>  active_device_num_{0};
+    // Mirrors cfg.force_master_device but settable live from the UI thread.
+    std::atomic<uint8_t>  force_master_device_{0};
     // Last bar position seen from the deck we were following. Seeds our own
     // counter on takeover so the box's downbeat lands on the master's downbeat
     // instead of an arbitrary beat (otherwise followers realign to our grid and

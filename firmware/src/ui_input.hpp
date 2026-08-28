@@ -30,7 +30,7 @@ int32_t ui_input_take_nudge_steps();
 
 // Count of free-run toggle events (both nudge buttons held ~1 s) since the
 // last call. Normally 0 or 1. Cleared on read.
-uint32_t ui_input_take_freerun_toggles();
+uint32_t ui_input_take_menu_holds();
 
 // True while the tap button is currently held down (for the hold-tap + spin
 // BPM modifier). Level, not an edge — not cleared on read.
