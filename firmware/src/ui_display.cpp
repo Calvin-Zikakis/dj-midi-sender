@@ -3,6 +3,7 @@
 #include <U8g2lib.h>
 
 #include <cstdio>
+#include <cstring>
 
 namespace firmware {
 namespace {
@@ -17,6 +18,27 @@ namespace {
 // backed up the console until the UI task tripped the task watchdog.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C g_oled(
     U8G2_R0, /*reset*/ U8X8_PIN_NONE, /*clock=SCL*/ OLED_SCL_PIN, /*data=SDA*/ OLED_SDA_PIN);
+
+// Pushing a frame is expensive: 1024 bytes over I2C at 400 kHz is ~25 ms of
+// bus time, and the UI task renders at 25 fps. Most frames are identical to the
+// last one (nothing on screen changes between beats), so compare the rendered
+// buffer against what the panel already has and skip the transfer when they
+// match. Comparing the buffer rather than the snapshot means this stays correct
+// no matter which fields the renderer starts or stops using.
+uint8_t g_last_frame[1024];
+bool    g_have_last_frame = false;
+
+void send_if_changed(U8G2& oled) {
+    const size_t len = static_cast<size_t>(oled.getBufferTileHeight()) * 8u *
+                       static_cast<size_t>(oled.getBufferTileWidth());
+    uint8_t* buf = oled.getBufferPtr();
+    if (len <= sizeof(g_last_frame)) {
+        if (g_have_last_frame && std::memcmp(buf, g_last_frame, len) == 0) return;
+        std::memcpy(g_last_frame, buf, len);
+        g_have_last_frame = true;
+    }
+    oled.sendBuffer();
+}
 
 }  // namespace
 
@@ -122,12 +144,12 @@ void ui_display_render(const UiSnapshot& s) {
 
     if (s.ui_mode == UiMode::kSourceSelect) {
         render_source_select(g_oled, s);
-        g_oled.sendBuffer();
+        send_if_changed(g_oled);
         return;
     }
     if (s.ui_mode == UiMode::kMenu || s.ui_mode == UiMode::kMenuEdit) {
         render_menu(g_oled, s);
-        g_oled.sendBuffer();
+        send_if_changed(g_oled);
         return;
     }
 
@@ -174,7 +196,7 @@ void ui_display_render(const UiSnapshot& s) {
     snprintf(buf, sizeof buf, "%s %s", s.link_up ? "L" : "-", s.usb_state);
     g_oled.drawStr(90, 62, buf);
 
-    g_oled.sendBuffer();
+    send_if_changed(g_oled);
 }
 
 }  // namespace firmware

@@ -118,6 +118,12 @@ values persist to NVS.
   tempo, so a single setting covers it.
 - **Nudge auto-repeat accelerates** rather than using a fixed rate, so both a
   single 1 ms trim and a long sweep are practical from the same button.
+- **Frames are only pushed when they change.** A full 128x64 transfer is
+  1024 bytes, about 25 ms of I2C at 400 kHz, and the UI renders at 25 fps — so
+  redrawing an unchanged screen would keep the bus busy continuously. The
+  renderer compares the composed buffer against what the panel already holds and
+  skips identical frames. Comparing the buffer rather than the snapshot keeps
+  that correct regardless of which fields the renderer uses.
 - **Taking master is opt-in, not one spin away.** "Act as player" gates it, so
   the destructive option is absent from the list until you have said you want
   the box on the link as a player.
