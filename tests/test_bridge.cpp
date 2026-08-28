@@ -825,6 +825,57 @@ void test_source_chosen_during_release_wins() {
     CHECK(wait_for([&] { return !r.bridge->master_mode(); }));
     CHECK(r.bridge->ignore_master());
 }
+
+void test_auto_source_keeps_tracking_the_master() {
+    section("switching back to auto does not forget who holds master");
+    Rig r;
+    auto s = status_packet(3, 128.0f, 1, true, 9);
+    r.status.deliver(s.data(), s.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return r.bridge->current_master_num() == 3; }));
+
+    // The panel falls back to `follower master` when a deck reclaims the role.
+    // That must not reset tracking to "unknown": a re-bootstrap latches onto
+    // whichever deck's status lands first — often an idle one with no track
+    // loaded, so no valid tempo — and only corrects when the real master's
+    // flag next comes round, seconds later on a real link.
+    r.bridge->set_force_master_device(0);
+    CHECK(r.bridge->current_master_num() == 3);
+
+    // Pinning still takes effect at once, and releasing the pin holds that
+    // deck until the master flag moves on its own.
+    r.bridge->set_force_master_device(1);
+    CHECK(r.bridge->current_master_num() == 1);
+    r.bridge->set_force_master_device(0);
+    CHECK(r.bridge->current_master_num() == 1);
+
+    auto moved = status_packet(3, 128.0f, 1, true, 10);
+    r.status.deliver(moved.data(), moved.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return r.bridge->current_master_num() == 3; }));
+}
+
+void test_tempo_snaps_back_after_a_release() {
+    section("the first deck tempo after a release lands whole, not smoothed");
+    Rig r;
+    auto s = status_packet(3, 128.0f, 1, true, 9);
+    r.status.deliver(s.data(), s.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return std::abs(r.clock.bpm_.load() - 128.0f) < 0.01f; }));
+    CHECK(become_master(r, 3, 128.0f, 0xC0A80105));
+
+    // Deck 3 asks for the role back and asserts it.
+    uint8_t req[64];
+    const size_t rn = prolink::build_master_handoff_request(req, sizeof req, "DECK", 3);
+    r.beat.deliver(req, rn, 0xC0A80105);
+    auto reclaimed = status_packet(3, 128.0f, 1, /*is_master*/ true, 12);
+    r.status.deliver(reclaimed.data(), reclaimed.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return !r.bridge->master_mode(); }));
+
+    // The tempo smoother still held the pre-master value, so a deck now at a
+    // very different tempo used to be approached over several packets — the
+    // box audibly lagging the deck for seconds. One packet must be enough.
+    auto fast = status_packet(3, 140.0f, 1, true, 12);
+    r.status.deliver(fast.data(), fast.size(), 0xC0A80105);
+    CHECK(wait_for([&] { return std::abs(r.clock.bpm_.load() - 140.0f) < 0.01f; }));
+}
 }  // namespace
 
 int bridge_tests_main() {
@@ -866,6 +917,8 @@ int bridge_tests_main() {
     test_handoff_ack_requires_magic_and_the_right_sender();
     test_release_without_handoff_restores_the_source();
     test_source_chosen_during_release_wins();
+    test_auto_source_keeps_tracking_the_master();
+    test_tempo_snaps_back_after_a_release();
 
     std::printf("\nbridge: %d checks, %d failure%s\n", g_checks, g_failures,
                 g_failures == 1 ? "" : "s");
