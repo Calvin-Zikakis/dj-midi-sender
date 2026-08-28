@@ -654,6 +654,9 @@ void ui_task(void*) {
         const uint32_t menu_hold  = firmware::ui_input_take_menu_holds();
         prolink::Bridge* b = g_bridge.load(std::memory_order_acquire);
         const uint32_t now = millis();
+        // Let the bridge tell a network fault apart from the music stopping:
+        // a link blip must not send MIDI Stop and restart on a downbeat.
+        if (b) b->set_link_up(g_link_up);
         const bool tap_held = firmware::ui_input_tap_held();
 
         // Track the tap gesture across every mode so a clean short tap (no spin)

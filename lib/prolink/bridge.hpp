@@ -36,6 +36,12 @@ struct BridgeConfig {
     bool     send_vcdj_announce = true;
     bool     verbose            = false;
     uint32_t silence_timeout_ms = 2000;
+    // How long to keep clocking when the network link itself is known to be
+    // down. A bumped cable or a switch renegotiating costs a second or two;
+    // stopping for that sends MIDI Stop mid-set and then waits for a downbeat
+    // to restart, which is far more disruptive than free-running on the
+    // latched tempo. Still stops if the link stays down.
+    uint32_t link_down_grace_ms = 8000;
     uint32_t keepalive_period_ms = 1500;
     uint32_t play_debounce_ms   = 100;
     float    fallback_bpm       = 120.0f;
@@ -152,6 +158,12 @@ public:
     void set_ignore_master(bool on);
     bool ignore_master() const { return ignore_master_.load(); }
 
+    // Report the physical network link state. Packets stopping because the
+    // link dropped is not the music stopping, so silence detection gives it
+    // link_down_grace_ms instead of silence_timeout_ms. Safe from any thread.
+    void set_link_up(bool up) { link_up_.store(up); }
+    bool link_up() const { return link_up_.load(); }
+
     // Set the manual tempo absolutely (classic tap-tempo). nudge_manual_bpm()
     // is the relative version (spin fine-tune).
     void set_manual_bpm(float bpm);
@@ -226,6 +238,7 @@ private:
     std::atomic<bool>     running_{false};
     std::atomic<bool>     playing_{false};
     std::atomic<bool>     free_run_{false};
+    std::atomic<bool>     link_up_{true};
     std::atomic<bool>     ignore_master_{false};
     std::atomic<bool>     manual_active_{false};
     std::atomic<float>    manual_bpm_{120.0f};
