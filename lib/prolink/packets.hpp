@@ -47,6 +47,8 @@ struct StatusPacket {
     uint8_t  beat_in_bar    = 0;
     uint32_t syncn          = 0;   // master-generation counter (0x84); the box
                                    //   must exceed the max seen to take master
+    uint8_t  master_handoff = 0xFF;// Mh (0x9F): device this player is yielding
+                                   //   master to, or 0xFF for none
 
     bool is_playing() const { return (flags >> 6) & 1; }
     bool is_master()  const { return (flags >> 5) & 1; }

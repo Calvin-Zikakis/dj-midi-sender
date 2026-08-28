@@ -101,9 +101,10 @@ void Bridge::set_master_mode(bool on) {
     if (on) {
         master_beat_in_bar_    = 0;
         last_master_status_ms_ = 0;
-        // Fire a burst of become-master requests at the current master so it
-        // yields (sets its Mh to us); ~3 s at the 5 Hz status cadence.
-        master_request_countdown_ = 15;
+        master_confirmed_.store(false);
+        // Keep requesting the handoff for a while (5 Hz cadence) until the
+        // master yields; ~6 s ceiling so we don't spam forever if it never does.
+        master_request_countdown_ = 30;
         // Master mode is standalone: we run our own tempo and ignore other
         // decks. set_ignore_master() latches the manual tempo and the run loop
         // cold-starts the clock, whose per-beat callback drives beat emission.
@@ -131,24 +132,36 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
 
     // Takeover request burst: unicast a MASTER_HANDOFF_REQUEST (0x26) to the
     // current master on port 50001, asking it to yield to us (it replies 0x27
-    // and sets its Mh to our device number). Needs the master's IP, learned
-    // from its status packets; if we don't have it yet, keep the countdown
-    // alive and try again next cycle.
-    if (master_request_countdown_ > 0) {
+    // and sets its Mh to our device number). Keep asking until it yields
+    // (master_confirmed_); needs the master's IP, learned from its status.
+    if (!master_confirmed_.load() && master_request_countdown_ > 0) {
         const uint32_t mip = master_ip_.load();
         if (mip != 0) {
             --master_request_countdown_;
             uint8_t req[64];
             size_t rn = build_master_handoff_request(req, sizeof(req),
                                                      cfg_.device_name, cfg_.device_num);
-            if (rn) beat_sock_.send(req, rn, mip, PORT_BEAT);
+            if (rn) {
+                bool ok = beat_sock_.send(req, rn, mip, PORT_BEAT);
+                char m[96];
+                std::snprintf(m, sizeof(m),
+                    "handoff 0x26 -> %u.%u.%u.%u:%u dev=%u %s (%d left)",
+                    (mip >> 24) & 0xFF, (mip >> 16) & 0xFF, (mip >> 8) & 0xFF, mip & 0xFF,
+                    PORT_BEAT, cfg_.device_num, ok ? "ok" : "FAIL", master_request_countdown_);
+                log(m);
+            }
+        } else {
+            log("master mode: waiting to learn the current master's IP");
         }
     }
     const uint8_t  beat  = master_beat_in_bar_ ? master_beat_in_bar_ : 1;
     const uint32_t syncn = max_syncn_seen_.load() + 1;   // outrank the peers
+    // Only claim master (mm=1) once the current master has yielded; until then
+    // we broadcast as a normal synced follower and keep sending 0x26 requests.
+    const bool assert_master = master_confirmed_.load();
     uint8_t pkt[320];
     size_t n = build_status_packet(pkt, sizeof(pkt), cfg_.device_name,
-                                   cfg_.device_num, bpm, beat, /*is_master*/ true,
+                                   cfg_.device_num, bpm, beat, assert_master,
                                    syncn);
     if (n) status_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_STATUS);
 }
@@ -433,6 +446,15 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
 
     if (parsed->device_num != current_master_.load()) return;
     master_ip_.store(last_status_src_ip_);  // remember the master's IP for a handoff request
+
+    // Handoff acknowledgement: the current master sets its Mh to our device
+    // number when it yields to us. Only then may we assert mm=1.
+    if (master_mode_.load() && !master_confirmed_.load() &&
+        parsed->master_handoff == cfg_.device_num) {
+        master_confirmed_.store(true);
+        max_syncn_seen_.store(parsed->syncn);   // our Syncn will be this + 1
+        if (cfg_.verbose) log("master yielded to us — asserting mm=1");
+    }
 
     // Master-filtered. Fire callback so the GUI only sees the active deck.
     // The XDJ-XZ broadcasts status for both internal decks; without this

@@ -208,6 +208,9 @@ private:
     int                   master_request_countdown_ = 0;  // takeover requests left to send
     std::atomic<uint32_t> master_ip_{0};             // current master's source IP (host order)
     uint32_t              last_status_src_ip_ = 0;   // src IP of the status packet in flight
+    // True once the current master has yielded to us (its Mh names our device);
+    // only then do we assert mm=1. Until then we broadcast mm=0 and keep asking.
+    std::atomic<bool>     master_confirmed_{false};
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};
