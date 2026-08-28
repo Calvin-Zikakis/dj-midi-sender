@@ -99,7 +99,11 @@ void Bridge::request_resync(bool immediate) {
 void Bridge::set_master_mode(bool on) {
     if (on) {
         master_mode_.store(true);
-        master_beat_in_bar_    = 0;
+        // Continue the master's bar rather than restarting it: on_master_beat
+        // increments before sending, so seeding with the last beat we saw makes
+        // our first broadcast beat the deck's next one. Keeps the takeover
+        // bar-transparent for everything syncing to us.
+        master_beat_in_bar_    = last_deck_beat_in_bar_.load();
         last_master_status_ms_ = 0;
         master_confirmed_.store(false);
         // Cancel any release still in flight. Without this, re-selecting master
@@ -370,6 +374,11 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     // Master-filtered. Fire callback so the GUI only sees the active deck —
     // not e.g. deck 2's idle status from a combined unit like the XDJ-XZ.
     if (cb_.on_beat) cb_.on_beat(*parsed);
+
+    // Remember the master deck's bar position while we follow it, so a later
+    // takeover can start on the same downbeat. Not while we are master —
+    // followers echo our own grid back at us, which would be circular.
+    if (!master_mode_.load()) last_deck_beat_in_bar_.store(parsed->beat_in_bar);
 
     // Standalone / tempo-master: WE are the tempo authority, so a deck's beats
     // must not touch our clock. Phase-locking to a deck that is itself syncing
