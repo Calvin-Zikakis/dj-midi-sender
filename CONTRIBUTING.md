@@ -45,7 +45,9 @@ cmake --build build --target xdj_tests
 Most of it pins down wire bytes reverse-engineered from real hardware — beat and
 status packets, the tempo-master handshake, the device-number claim — because
 those offsets have no compiler to protect them. The bridge tests drive the state
-machine through fake sockets and a fake clock.
+machine through fake sockets and a fake clock, and the UI tests cover the
+front-panel source gating (`firmware/src/ui_display.hpp` is header-only enough
+to compile on the host).
 
 **The bridge is multi-threaded, so run the sanitizers on changes to
 `lib/prolink/`** — CI does, and ThreadSanitizer has already caught real races
