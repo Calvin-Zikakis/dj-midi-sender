@@ -561,6 +561,10 @@ CDJ status streams.
   holding is deliberately *not* in the core: it needs a player slot, which is a
   policy the panel authorises, so the firmware drives it through the normal
   source selection instead.
+- **Recovery gets a fresh silence window.** When the link comes back, no
+  packet has arrived yet, so the window is still measured from before the drop
+  and would fire on the very first poll — stopping the clock at the exact
+  moment the network recovers. The run loop resets it on the down-to-up edge.
 - **Link faults are not stops.** Packets also stop arriving when the Ethernet
   link drops, and that is a network fault, not the DJ stopping the music. The
   firmware feeds `ETHERNET_EVENT_CONNECTED/DISCONNECTED` to

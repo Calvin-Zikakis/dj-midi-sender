@@ -811,6 +811,15 @@ void Bridge::maybe_send_keepalive(uint64_t t) {
 }
 
 void Bridge::maybe_stop_on_silence(uint64_t t) {
+    // Recovery gets a fresh silence window. Coming back from an outage no
+    // packet has arrived yet, so the window is still measured from before the
+    // drop and fires on the very first poll — stopping the clock at the exact
+    // moment the network comes back, which is precisely what the grace above
+    // exists to prevent.
+    const bool up = link_up_.load();
+    if (up && !last_link_up_) last_packet_ms_ = t;
+    last_link_up_ = up;
+
     if (!playing_.load()) return;
     if (free_run_.load() || ignore_master_.load()) return;  // keep clocking standalone
     // A known-down link is a network fault, not the DJ stopping the music, so

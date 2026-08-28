@@ -97,6 +97,7 @@ private:
     std::atomic<int32_t>  phase_error_us_;
     std::atomic<int32_t>  offset_us_;        // lead-time compensation, signed
     std::atomic<int64_t>  last_beat_anchor_us_;  // abs time (timer µs) of our last tick-0
+    std::atomic<int64_t>  last_feed_us_;      // abs time of the last master beat fed in
     std::atomic<uint8_t>  tick_in_beat_;     // index of *next* tick to emit
     std::atomic<uint8_t>  beat_in_bar_;
     std::atomic<float>    current_bpm_;

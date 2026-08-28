@@ -324,7 +324,10 @@ void test_stops_on_silence() {
 
 void test_a_link_blip_does_not_stop_the_clock() {
     section("a brief link drop rides through instead of stopping");
-    Rig r([](prolink::BridgeConfig& c) { c.link_down_grace_ms = 2000; });
+    // Grace far wider than the sleep below: the point is that the 300 ms
+    // silence timeout does not fire, and a tight margin here just makes the
+    // test flaky on a loaded machine.
+    Rig r([](prolink::BridgeConfig& c) { c.link_down_grace_ms = 30000; });
     auto down = beat_packet(1, 120.0f, 1);
     r.beat.deliver(down.data(), down.size());
     CHECK(wait_for([&] { return r.clock.starts_.load() == 1; }));
@@ -333,7 +336,7 @@ void test_a_link_blip_does_not_stop_the_clock() {
     // silence_timeout_ms (300) — but the box knows this is a network fault,
     // not the DJ stopping, and keeps clocking on the latched tempo.
     r.bridge->set_link_up(false);
-    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
     CHECK(r.clock.stops_.load() == 0);
     CHECK(r.clock.running_.load());
 

@@ -27,6 +27,7 @@ Clock::Clock(IMidiOut& midi, ITimer& timer, uint32_t gain_divisor)
     , phase_error_us_(0)
     , offset_us_(0)
     , last_beat_anchor_us_(0)
+    , last_feed_us_(0)
     , tick_in_beat_(0)
     , beat_in_bar_(0)
     , current_bpm_(120.0f)
@@ -42,6 +43,7 @@ void Clock::update_tempo_bpm(float bpm) {
 
 void Clock::correct_phase(uint8_t beat_in_bar) {
     beat_in_bar_.store(beat_in_bar);
+    last_feed_us_.store(static_cast<int64_t>(timer_.now_us()));
 
     // Where should the next tick fire? Ideally tick 0 happens `offset_us`
     // before now (positive offset == lead-time compensation). If
@@ -68,6 +70,7 @@ void Clock::feed_beat(uint32_t ms_to_next_beat, uint8_t beat_in_bar) {
     // dwarfed by what we fix here, so we don't steer on it yet.
     (void)ms_to_next_beat;
     beat_in_bar_.store(beat_in_bar);
+    last_feed_us_.store(static_cast<int64_t>(timer_.now_us()));
     if (!running_.load()) return;
 
     const uint32_t period    = tick_period_us_.load();
@@ -126,7 +129,20 @@ uint32_t Clock::on_tick_() {
     // continuous-time reference for phase locking.
     const bool beat_boundary = (tick_in_beat_.load() == 0);
     if (beat_boundary) {
-        last_beat_anchor_us_.store(static_cast<int64_t>(timer_.now_us()));
+        const int64_t now = static_cast<int64_t>(timer_.now_us());
+        last_beat_anchor_us_.store(now);
+        // Free-running — standalone, or holding the tempo after the decks
+        // stopped — means no master beats arrive to place us in the bar, and
+        // beat_in_bar_ would sit frozen. It is what drives the panel's beat
+        // dots, so a frozen value reads as "the clock died" when it is in
+        // fact still running. Advance it ourselves once we have clearly
+        // missed a master beat; a real one overwrites this with the truth.
+        const int64_t span =
+            static_cast<int64_t>(tick_period_us_.load()) * TICKS_PER_BEAT;
+        if (span > 0 && (now - last_feed_us_.load()) > span * 3 / 2) {
+            const uint8_t b = beat_in_bar_.load();
+            beat_in_bar_.store(static_cast<uint8_t>(b >= 4 ? 1 : b + 1));
+        }
     }
 
     midi_.send_byte(MIDI_CLOCK);

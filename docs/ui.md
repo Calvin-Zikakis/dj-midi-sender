@@ -80,6 +80,11 @@ The tag slot shows only what `src` does not already tell you:
 `mst` shows the device number currently holding DJ-Link master, or `us` when
 that is the box.
 
+The beat dots follow the master's bar position while there is one. When the box
+is free-running — standalone, or holding after the decks stopped — it advances
+them from its own clock instead, after about a beat of grace. They used to
+freeze in that state, which made a perfectly healthy clock look dead.
+
 ## Source-select
 
 Spin moves a `>` cursor; the active source keeps its `(on)` marker until you
