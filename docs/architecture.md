@@ -418,9 +418,19 @@ and an XDJ-XZ. Behind `Bridge::set_master_mode()`:
    broadcasting status before requesting — beat-link only ACKs a requester it
    has already seen status from.
 
-4. **Front-panel Master mode** — a toggle that makes the box the tempo
-   authority, using the existing free-run / manual-BPM tempo as its grid. Not
-   yet wired to the UI; enable with `-DMASTER_TEST` for bench testing.
+4. **Front-panel Master mode** — selectable from the clock-source list as
+   `mstr` (the list reads `auto / P1-P4 / mstr / off`). Selecting it requests
+   the handoff; selecting anything else releases the role, appointing a deck via
+   `SYNC_CONTROL` on the way out so the link is never left without a master
+   (with a 3 s fallback if the appointed deck never claims it). Taking master
+   seeds the box's tempo from whatever it was following, so the takeover does
+   not lurch the music.
+
+   **Device number matters.** Do not claim 1-4: those are deck slots, and a
+   4-channel unit like the XDJ-XZ owns all four. Squatting on one (we tried 4)
+   breaks that mixer's own master arbitration — it stops letting you pass master
+   between its decks. The box uses **5** (a mixer slot; the protocol lets a
+   mixer hold tempo master), for both follower and master roles.
 
 ## Master device tracking
 

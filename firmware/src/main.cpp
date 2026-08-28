@@ -355,24 +355,28 @@ void bridge_task(void*) {
     prolink::Clock clock(g_midi_out, timer, /* gain_divisor */ 16);
 
     prolink::BridgeConfig cfg;
-#ifdef MASTER_TEST
-    // Tempo-master claims want a real deck number. This rig already has 1+2
-    // (XDJ-XZ decks) and 3 (XDJ-700), so 4 is the only free deck slot.
-    // Override with -DMASTER_DEVICE_NUM=n when experimenting.
-    #ifndef MASTER_DEVICE_NUM
-    #define MASTER_DEVICE_NUM 4
+    // Our device number on the link, used for the vCDJ announce and (in master
+    // mode) the beat/status packets we broadcast.
+    //
+    // NOT 1-4: those are deck slots, and a 4-channel unit like the XDJ-XZ owns
+    // all four. Squatting on one (we tried 4) breaks that mixer's own master
+    // arbitration — it stops letting you pass master between its decks. 5-6 are
+    // the mixer slots, and the protocol allows a mixer to hold tempo master, so
+    // 5 works both as a quiet follower and as a master claimant.
+    // Override with -DDEVICE_NUM=n when experimenting.
+    #ifndef DEVICE_NUM
+    #define DEVICE_NUM 5
     #endif
-    cfg.device_num = MASTER_DEVICE_NUM;
-#else
-    cfg.device_num = 7;  // safe slot (1-4 = decks, 5-6 = mixers; see docs/architecture.md)
-#endif
+    cfg.device_num = DEVICE_NUM;
     std::strncpy(cfg.device_name, "xdj-bridge", sizeof(cfg.device_name) - 1);
     std::memcpy(cfg.mac, g_mac, 6);
     cfg.local_ip            = kLocalIpHost;
     cfg.broadcast_ip        = kBroadcastIpHost;
     cfg.send_vcdj_announce  = true;
-#ifdef MASTER_TEST
-    cfg.verbose             = true;   // see 0x26 sends + the yield during the test
+    // Verbose logs the master handoff (0x26 sends, yields) and other bridge
+    // events. Serial only exists in the diag build, so enable it there.
+#ifdef DIAG_SERIAL_STUB
+    cfg.verbose             = true;
 #else
     cfg.verbose             = false;
 #endif
@@ -514,14 +518,6 @@ void bridge_task(void*) {
     // (no-op otherwise). Both objects outlive run() on this stack.
     clock.set_on_beat([&bridge]() { bridge.on_master_beat(); });
 
-#ifdef MASTER_TEST
-    // Experimental tempo-master bench test (PLATFORMIO_BUILD_FLAGS='-DMASTER_TEST').
-    // Broadcast as master at an obvious test tempo so we can see whether a CDJ
-    // in sync mode follows the box. 100 BPM is well clear of typical track BPMs.
-    bridge.set_manual_bpm(100.0f);
-    bridge.set_master_mode(true);
-    printf("[master-test] broadcasting as Pro DJ Link tempo master @ 100 BPM\n");
-#endif
 
     printf("[bridge] starting — vCDJ device %u, broadcast %s\n",
            cfg.device_num, "169.254.255.255");
@@ -694,7 +690,14 @@ void ui_task(void*) {
             if (btns & firmware::kBtnEncSw) {              // push = confirm
                 g_selected_src.store(proposed_src);
                 if (b) {
-                    if (proposed_src == firmware::kSourceOff) {
+                    // Leaving master hands the role to a deck (graceful
+                    // release); entering it claims the role via the handoff.
+                    if (proposed_src != firmware::kSourceMaster && b->master_mode())
+                        b->set_master_mode(false);
+
+                    if (proposed_src == firmware::kSourceMaster) {
+                        b->set_master_mode(true);          // box drives the link
+                    } else if (proposed_src == firmware::kSourceOff) {
                         b->set_ignore_master(true);        // standalone tempo
                     } else {
                         b->set_ignore_master(false);
@@ -789,6 +792,12 @@ void ui_task(void*) {
             }
         }
 
+        // If a deck reclaimed master from us, the bridge drops master mode on
+        // its own — fall the UI back to `auto` so the panel matches reality.
+        if (b && g_selected_src.load() == firmware::kSourceMaster && !b->master_mode()) {
+            g_selected_src.store(0);
+        }
+
         // Snapshot live state for the display.
         firmware::UiSnapshot s;
         s.link_up = g_link_up;
@@ -816,6 +825,10 @@ void ui_task(void*) {
         s.pitch_pct    = g_pitch_pct.load();
         s.tapped_bpm   = g_tapped_bpm.load();
         s.resync_flash = (now < resync_flash_until);
+        if (b) {
+            s.master_wanted = b->master_mode();
+            s.is_master     = b->is_tempo_master();
+        }
 #ifdef DIAG_SERIAL_STUB
         s.usb_state = "diag";
 #else

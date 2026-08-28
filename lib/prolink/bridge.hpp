@@ -150,6 +150,9 @@ public:
     // have broadcast enabled by the platform layer.
     void set_master_mode(bool on);
     bool master_mode() const { return master_mode_.load(); }
+    // True only once the handoff completed and we actually hold the role;
+    // master_mode() is true from the moment it is requested.
+    bool is_tempo_master() const { return master_confirmed_.load(); }
     // Called once per beat from the clock (Clock::set_on_beat) to emit a beat
     // packet advertising our grid. No-op unless master mode is on.
     void on_master_beat();
@@ -216,6 +219,9 @@ private:
     // Reverse handoff: a deck asked us (the master) to yield. We advertise its
     // number in our Mh until it asserts master, then step down. 0 = not yielding.
     std::atomic<uint8_t>  yielding_to_{0};
+    // Deadline for a UI-requested release to complete; if the appointed deck
+    // never claims master we step down anyway. 0 = no release pending.
+    uint64_t              release_deadline_ms_ = 0;
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};
