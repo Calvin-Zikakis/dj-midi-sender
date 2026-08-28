@@ -234,6 +234,8 @@ private:
     void step_device_claim(uint64_t now_ms);
     void maybe_send_keepalive(uint64_t now_ms);
     void maybe_stop_on_silence(uint64_t now_ms);
+    // Run-loop-only: previous link state, for edge detection.
+    bool last_link_up_ = true;
     void maybe_resync(uint64_t now_ms);
     void maybe_broadcast_master_status(uint64_t now_ms);
     // Applies a pending set_master_mode() request on the bridge thread.

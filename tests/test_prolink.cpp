@@ -334,6 +334,55 @@ void test_clock_tempo_and_transport() {
     CHECK_EQ(clock.current_tick_period_us(), before);
 }
 
+void test_clock_advances_the_bar_when_free_running() {
+    section("clock: free-running advances its own bar position");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, /*gain*/ 16);
+    clock.update_tempo_bpm(120.0f);   // 500 ms per beat
+    clock.start();
+
+    // Following a deck, the bar position is whatever the master says.
+    clock.feed_beat(0, 2);
+    CHECK_EQ(clock.current_beat_in_bar(), 2);
+
+    // Now the master goes away — a stopped deck with "Keep playing" on, or
+    // standalone. beat_in_bar is what drives the panel's beat dots, so it has
+    // to keep moving or a running clock looks dead.
+    auto beat_of_ticks = [&] {
+        for (int i = 0; i < 24; ++i) {
+            timer.now_ += clock.current_tick_period_us();
+            timer.tick();
+        }
+    };
+    // Grace first: self-advancing waits until we have clearly missed a master
+    // beat (1.5 beat spans), so a single dropped packet cannot double-count,
+    // and neither can one landing just either side of our own tick-0. Our
+    // boundary falls a tick past each beat, so that works out to two of them
+    // — about a second at 120 BPM before the dots pick themselves up.
+    beat_of_ticks();
+    CHECK_EQ(clock.current_beat_in_bar(), 2);
+    beat_of_ticks();
+    CHECK_EQ(clock.current_beat_in_bar(), 2);
+    beat_of_ticks();
+    CHECK_EQ(clock.current_beat_in_bar(), 3);
+    beat_of_ticks();
+    CHECK_EQ(clock.current_beat_in_bar(), 4);
+    beat_of_ticks();
+    CHECK_EQ(clock.current_beat_in_bar(), 1);   // wraps round the bar
+
+    // A real master beat still wins outright.
+    clock.feed_beat(0, 4);
+    CHECK_EQ(clock.current_beat_in_bar(), 4);
+    // ...and while one keeps arriving we must not double-advance past it.
+    for (int i = 0; i < 24; ++i) {
+        timer.now_ += clock.current_tick_period_us();
+        timer.tick();
+        if (i == 12) clock.feed_beat(0, 4);
+    }
+    CHECK_EQ(clock.current_beat_in_bar(), 4);
+}
+
 void test_clock_offset_is_tempo_independent() {
     section("clock: lead-time offset is a constant time, not a fraction of a beat");
     FakeMidi midi;
@@ -590,6 +639,7 @@ int main() {
     test_parsers_reject_bad_input();
     test_pitch_decoding();
     test_clock_tempo_and_transport();
+    test_clock_advances_the_bar_when_free_running();
     test_clock_offset_is_tempo_independent();
     test_clock_phase_error_converges();
     test_clock_phase_error_wraps_the_short_way();
