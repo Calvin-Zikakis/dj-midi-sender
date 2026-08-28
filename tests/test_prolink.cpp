@@ -573,8 +573,9 @@ void test_parsers_reject_short_buffers_safely() {
 }
 }  // namespace
 
-// Defined in test_bridge.cpp; returns its failure count.
+// Defined in the other test translation units; each returns its failure count.
 int bridge_tests_main();
+int ui_tests_main();
 
 int main() {
     test_beat_packet_matches_real_hardware();
@@ -607,7 +608,8 @@ int main() {
                 g_failures == 1 ? "" : "s");
 
     const int bridge_failures = bridge_tests_main();
-    const int total = g_failures + bridge_failures;
+    const int ui_failures     = ui_tests_main();
+    const int total = g_failures + bridge_failures + ui_failures;
     std::printf("\n%s\n", total == 0 ? "ALL TESTS PASSED" : "TESTS FAILED");
     return total == 0 ? 0 : 1;
 }

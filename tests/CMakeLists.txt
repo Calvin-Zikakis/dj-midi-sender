@@ -5,8 +5,14 @@
 add_executable(xdj_tests
     test_prolink.cpp
     test_bridge.cpp
+    test_ui.cpp
 )
 target_link_libraries(xdj_tests PRIVATE prolink)
+
+# firmware/src/ui_display.hpp is header-only apart from two label functions, so
+# the source-gating helpers can be tested on the host without pulling in any
+# Arduino/ESP-IDF dependency.
+target_include_directories(xdj_tests PRIVATE ${CMAKE_SOURCE_DIR}/firmware/src)
 
 # The core is meant to be warning-clean; tests hold it to that.
 target_compile_options(xdj_tests PRIVATE -Wall -Wextra)
