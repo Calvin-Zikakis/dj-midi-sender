@@ -40,6 +40,10 @@ const uint8_t kTable[7][4] = {
 std::atomic<int32_t>  g_steps{0};
 std::atomic<uint32_t> g_presses{0};
 std::atomic<bool>     g_tap_held{false};
+// Timestamp of the tap button's settle, taken in the 1 ms input task. The UI
+// runs at 25 fps, so timing taps off its frame clock quantised every interval
+// by up to 40 ms — around 8% of a beat at 128 BPM.
+std::atomic<uint32_t> g_tap_press_ms{0};
 uint8_t g_enc_state = R_START;
 
 struct Btn {
@@ -76,6 +80,14 @@ NudgeBtn g_nudge[] = {
     {BTN_NUDGE_L_PIN, -1, true, true, 0, 0, 0, false},
     {BTN_NUDGE_R_PIN, +1, true, true, 0, 0, 0, false},
 };
+// Debouncing is per-button, so the first button of the menu combo settles ~25 ms
+// before the second and used to emit its step immediately — every menu open
+// shifted the clock offset by one step and burned an NVS write. Hold a fresh
+// press this long before emitting it: long enough for the other button of a
+// deliberate combo to settle, short enough to feel instant on a single press.
+constexpr uint32_t kNudgeEscrowMs = 70;
+int8_t   g_escrow_dir = 0;      // 0 = nothing held back
+uint32_t g_escrow_ms  = 0;
 constexpr uint32_t kRepeatDelayMs = 350;  // hold this long before repeats start
 constexpr uint16_t kRepeatStartMs = 160;  // first repeat interval
 constexpr uint16_t kRepeatMinMs   = 35;   // fastest interval (full speed)
@@ -121,7 +133,14 @@ void poll_nudge(uint32_t now_ms) {
     }
 
     // 3) Nudge steps — suppressed entirely while both are held (that's a
-    //    combo, not a nudge). One step per press, then accelerating repeat.
+    //    combo, not a nudge). The first step of a press is escrowed briefly so
+    //    a combo can be recognised before it escapes; repeats then accelerate.
+    if (both_held) g_escrow_dir = 0;    // it was a combo after all — discard
+    if (g_escrow_dir != 0 &&
+        static_cast<int32_t>(now_ms - g_escrow_ms) >= static_cast<int32_t>(kNudgeEscrowMs)) {
+        g_nudge_steps.fetch_add(g_escrow_dir, std::memory_order_relaxed);
+        g_escrow_dir = 0;
+    }
     for (NudgeBtn& b : g_nudge) {
         if (b.stable) {            // released
             b.fresh_press = false;
@@ -133,7 +152,8 @@ void poll_nudge(uint32_t now_ms) {
         }
         if (b.fresh_press) {
             b.fresh_press = false;
-            g_nudge_steps.fetch_add(b.dir, std::memory_order_relaxed);
+            g_escrow_dir  = b.dir;   // emitted after the escrow window
+            g_escrow_ms   = now_ms;
         } else if (static_cast<int32_t>(now_ms - b.next_fire_ms) >= 0) {
             g_nudge_steps.fetch_add(b.dir, std::memory_order_relaxed);
             b.interval_ms = (b.interval_ms > kRepeatMinMs + kRepeatAccelMs)
@@ -167,6 +187,7 @@ void poll_buttons(uint32_t now_ms) {
             btn.stable = reading;
             if (!btn.stable) {  // settled LOW = fresh press
                 g_presses.fetch_or(btn.bit, std::memory_order_relaxed);
+                if (btn.bit == kBtnTap) g_tap_press_ms.store(now_ms, std::memory_order_relaxed);
             }
         }
         // Continuously expose the tap button's held state (LOW = held) for the
@@ -229,6 +250,10 @@ uint32_t ui_input_take_menu_holds() {
 
 bool ui_input_tap_held() {
     return g_tap_held.load(std::memory_order_relaxed);
+}
+
+uint32_t ui_input_tap_press_ms() {
+    return g_tap_press_ms.load(std::memory_order_relaxed);
 }
 
 uint32_t ui_input_take_button_presses() {
