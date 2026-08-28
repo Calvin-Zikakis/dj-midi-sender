@@ -554,6 +554,16 @@ CDJ status streams.
   - No status or beat packets arrive from the master for >2 seconds.
 - **Play-state debounce**: the XZ flickers the play flag briefly during cue
   scrubbing. Require >100 ms of stable state before reacting.
+- **Link faults are not stops.** Packets also stop arriving when the Ethernet
+  link drops, and that is a network fault, not the DJ stopping the music. The
+  firmware feeds `ETHERNET_EVENT_CONNECTED/DISCONNECTED` to
+  `Bridge::set_link_up()`, and while the link is known down the silence
+  timeout stretches to `link_down_grace_ms` (8 s) so the clock free-runs on
+  its latched tempo instead. A bumped cable, or a switch renegotiating after
+  a device-number change, then costs nothing audible; without this the box
+  sends Stop and waits for the next downbeat to Start, which is far more
+  disruptive than a couple of seconds of unlocked drift. A link that stays
+  down past the grace still stops.
 
 Restart after a stop is a fresh `Start` on the next downbeat — no MIDI
 **Continue** is used.

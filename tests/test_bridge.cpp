@@ -322,6 +322,41 @@ void test_stops_on_silence() {
 
 // ── Bar slip and re-sync ───────────────────────────────────────────────────
 
+void test_a_link_blip_does_not_stop_the_clock() {
+    section("a brief link drop rides through instead of stopping");
+    Rig r([](prolink::BridgeConfig& c) { c.link_down_grace_ms = 2000; });
+    auto down = beat_packet(1, 120.0f, 1);
+    r.beat.deliver(down.data(), down.size());
+    CHECK(wait_for([&] { return r.clock.starts_.load() == 1; }));
+
+    // The link drops. Packets stop with it, so silence detection would fire at
+    // silence_timeout_ms (300) — but the box knows this is a network fault,
+    // not the DJ stopping, and keeps clocking on the latched tempo.
+    r.bridge->set_link_up(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+    CHECK(r.clock.stops_.load() == 0);
+    CHECK(r.clock.running_.load());
+
+    // Link back before the grace expires: no Stop, no Start, no waiting for a
+    // downbeat — the clock simply carries on and re-locks.
+    r.bridge->set_link_up(true);
+    r.beat.deliver(down.data(), down.size());
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    CHECK(r.clock.stops_.load() == 0);
+    CHECK(r.clock.starts_.load() == 1);
+}
+
+void test_a_long_link_outage_still_stops() {
+    section("but a link that stays down does stop the clock");
+    Rig r([](prolink::BridgeConfig& c) { c.link_down_grace_ms = 400; });
+    auto down = beat_packet(1, 120.0f, 1);
+    r.beat.deliver(down.data(), down.size());
+    CHECK(wait_for([&] { return r.clock.starts_.load() == 1; }));
+
+    r.bridge->set_link_up(false);
+    CHECK(wait_for([&] { return r.clock.stops_.load() >= 1; }, 2000));
+}
+
 void test_single_dropped_beat_does_not_realign() {
     section("one dropped beat packet must not trigger a Stop+Start");
     Rig r;
@@ -887,6 +922,8 @@ int bridge_tests_main() {
     test_start_is_held_until_a_downbeat();
     test_stops_when_the_master_pauses();
     test_stops_on_silence();
+    test_a_link_blip_does_not_stop_the_clock();
+    test_a_long_link_outage_still_stops();
 
     test_single_dropped_beat_does_not_realign();
     test_sustained_bar_slip_realigns();

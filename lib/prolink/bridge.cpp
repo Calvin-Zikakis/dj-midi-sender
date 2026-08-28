@@ -798,7 +798,12 @@ void Bridge::maybe_send_keepalive(uint64_t t) {
 void Bridge::maybe_stop_on_silence(uint64_t t) {
     if (!playing_.load()) return;
     if (free_run_.load() || ignore_master_.load()) return;  // keep clocking standalone
-    if (t - last_packet_ms_ < cfg_.silence_timeout_ms) return;
+    // A known-down link is a network fault, not the DJ stopping the music, so
+    // ride it out on the latched tempo rather than sending MIDI Stop and then
+    // waiting for a downbeat to restart. Still stops if it stays down.
+    const uint32_t timeout = link_up_.load() ? cfg_.silence_timeout_ms
+                                             : cfg_.link_down_grace_ms;
+    if (t - last_packet_ms_ < timeout) return;
     playing_.store(false);
     waiting_for_downbeat_ = false;
     last_master_playing_ = false;
@@ -808,7 +813,8 @@ void Bridge::maybe_stop_on_silence(uint64_t t) {
     bar_slip_count_ = 0;
     smoothed_bpm_ = 0.0f;   // reseed on next start
     clock_.stop();
-    if (cfg_.verbose) log("stop (silence timeout)");
+    if (cfg_.verbose) log(link_up_.load() ? "stop (silence timeout)"
+                                          : "stop (link down too long)");
 }
 
 void Bridge::restart_clock_(float bpm) {
