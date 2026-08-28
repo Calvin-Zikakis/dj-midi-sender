@@ -34,7 +34,6 @@ design, and [docs/hardware.md](docs/hardware.md) for the board and wiring.
 - **Lock quality.** Drift-free timer plus continuous-microsecond phase lock;
   bar-slip realignment gated behind a confidence counter so a single dropped
   beat packet cannot cause a false stop.
-
 - **ESP32 as tempo master.** The box claims the Pro DJ Link tempo-master role
   so CDJs sync *to* it: it emits its own beat and status packets, performs the
   documented handoff (request `0x26`, the master's `0x27` acknowledgement, then
@@ -49,11 +48,17 @@ design, and [docs/hardware.md](docs/hardware.md) for the board and wiring.
 
 ## Next
 
+- **Productize the hardware.** A custom PCB combining the ESP32-S3, W5500, DIN
+  output buffer, USB-A host jack and power, replacing the dev board and dupont
+  harness, then an enclosure. The protocol and firmware work is done; what
+  remains is making it a box rather than a bench build.
+- **Multi-CDJ master handoff tracking.** Follow the master role moving between
+  more than two players; the handoff protocol is already implemented in both
+  directions, so this is mostly broadening the tracking and testing it on a
+  larger link.
+
 ## Later / maybe
 
-- Custom PCB combining the ESP32-S3, W5500, DIN buffer, USB-A jack, and power.
-- Enclosure.
-- Multi-CDJ master handoff tracking via status packets.
 - Bidirectional Ableton Link bridge.
 - OSC output for lighting / visuals.
 - DMX output triggered on downbeat.
