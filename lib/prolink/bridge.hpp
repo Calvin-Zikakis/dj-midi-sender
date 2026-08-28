@@ -225,6 +225,11 @@ private:
     std::atomic<bool>     master_mode_{false};
     uint8_t               master_beat_in_bar_ = 0;   // 0 = not started; 1..4
     std::atomic<uint8_t>  master_beat_pos_{0};       // same, readable by the UI
+    // Last bar position seen from the deck we were following. Seeds our own
+    // counter on takeover so the box's downbeat lands on the master's downbeat
+    // instead of an arbitrary beat (otherwise followers realign to our grid and
+    // the music shifts by 1-3 beats).
+    std::atomic<uint8_t>  last_deck_beat_in_bar_{0};
     uint64_t              last_master_status_ms_ = 0;
     std::atomic<uint32_t> max_syncn_seen_{0};        // highest Syncn from peers
     int                   master_request_countdown_ = 0;  // takeover requests left to send
