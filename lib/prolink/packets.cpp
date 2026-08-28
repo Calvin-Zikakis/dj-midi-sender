@@ -236,7 +236,8 @@ size_t build_status_packet(uint8_t* out, size_t out_len,
                            float bpm,
                            uint8_t beat_in_bar,
                            bool is_master,
-                           uint32_t syncn) {
+                           uint32_t syncn,
+                           uint8_t master_handoff) {
     const size_t PKT_LEN = sizeof(kStatusTemplate);  // 284 bytes
     if (out_len < PKT_LEN) return 0;
     if (!(bpm > 0.0f))     return 0;
@@ -265,7 +266,7 @@ size_t build_status_packet(uint8_t* out, size_t out_len,
     w16(out + 0x92, static_cast<uint16_t>(bpm * 100.0f + 0.5f));  // BPM x100
     w32(out + 0x98, PITCH_UNITY);                            // Pitch2 = 1.0x
     out[0x9E] = is_master ? 0x01 : 0x00;                     // Mm: I am master
-    out[0x9F] = 0xFF;                                        // Mh: no handoff
+    out[0x9F] = master_handoff;                              // Mh: yield target
     out[0xA6] = beat_in_bar;                                 // beat-within-bar
     return PKT_LEN;
 }
@@ -325,6 +326,40 @@ size_t build_master_handoff_request(uint8_t* out, size_t out_len,
     p[0x06] = 0x00;
     p[0x07] = 0x00;
     p[0x08] = device_num;
+    return PKT_LEN;
+}
+
+size_t build_master_handoff_response(uint8_t* out, size_t out_len,
+                                     const char* device_name,
+                                     uint8_t device_num) {
+    constexpr size_t HDR_LEN = 0x1F;
+    constexpr size_t PAYLOAD_LEN = 13;
+    constexpr size_t PKT_LEN = HDR_LEN + PAYLOAD_LEN;  // 44 bytes
+    if (out_len < PKT_LEN) return 0;
+
+    std::memset(out, 0, PKT_LEN);
+    std::memcpy(out, MAGIC, sizeof(MAGIC));
+    out[0x0A] = PKT_TYPE_MASTER_HANDOFF_RESP;  // 0x27
+    for (size_t i = 0; i < 20; ++i) {
+        if (!device_name || device_name[i] == '\0') break;
+        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
+    }
+    // beat-link YIELD_ACK_PAYLOAD, our device number at [2] and [8]:
+    //   01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 01
+    uint8_t* p = out + HDR_LEN;
+    p[0x00] = 0x01;
+    p[0x01] = 0x00;
+    p[0x02] = device_num;
+    p[0x03] = 0x00;
+    p[0x04] = 0x08;          // len_r: 8 bytes follow
+    p[0x05] = 0x00;
+    p[0x06] = 0x00;
+    p[0x07] = 0x00;
+    p[0x08] = device_num;
+    p[0x09] = 0x00;
+    p[0x0A] = 0x00;
+    p[0x0B] = 0x00;
+    p[0x0C] = 0x01;
     return PKT_LEN;
 }
 

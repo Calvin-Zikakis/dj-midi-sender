@@ -109,7 +109,10 @@ size_t build_status_packet(uint8_t* out, size_t out_len,
                            float bpm,
                            uint8_t beat_in_bar,
                            bool is_master,
-                           uint32_t syncn);
+                           uint32_t syncn,
+                           // Mh (0x9F): device number we are yielding master to
+                           // during a handoff, or 0xFF for none.
+                           uint8_t master_handoff = 0xFF);
 
 // Build a Pro DJ Link sync-control command (type 0x2A, port 50001) — the packet
 // that requests a tempo-master takeover. Format from Deep Symmetry's beat-link:
@@ -132,5 +135,14 @@ size_t build_sync_control_packet(uint8_t* out, size_t out_len,
 size_t build_master_handoff_request(uint8_t* out, size_t out_len,
                                     const char* device_name,
                                     uint8_t device_num);
+
+// Build the tempo-master yield acknowledgement (type 0x27) — sent when WE are
+// master and another device asks to take over, so a DJ can always reclaim the
+// master role from the box. Payload from beat-link's YIELD_ACK_PAYLOAD:
+// `01 00 <dev> 00 08 00 00 00 <dev> 00 00 00 01` (our device number in both
+// slots). Sent unicast to the requester **on port 50002**. Returns 44 or 0.
+size_t build_master_handoff_response(uint8_t* out, size_t out_len,
+                                     const char* device_name,
+                                     uint8_t device_num);
 
 }  // namespace prolink

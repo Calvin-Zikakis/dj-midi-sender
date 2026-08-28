@@ -182,6 +182,8 @@ private:
     void maybe_stop_on_silence(uint64_t now_ms);
     void maybe_resync(uint64_t now_ms);
     void maybe_broadcast_master_status(uint64_t now_ms);
+    // A deck (device `requester`, at `requester_ip`) asked us to yield master.
+    void handle_master_yield_request(uint8_t requester, uint32_t requester_ip);
     void log(const char* msg) const;
 
     IUdpSocket& beat_sock_;
@@ -211,6 +213,9 @@ private:
     // True once the current master has yielded to us (its Mh names our device);
     // only then do we assert mm=1. Until then we broadcast mm=0 and keep asking.
     std::atomic<bool>     master_confirmed_{false};
+    // Reverse handoff: a deck asked us (the master) to yield. We advertise its
+    // number in our Mh until it asserts master, then step down. 0 = not yielding.
+    std::atomic<uint8_t>  yielding_to_{0};
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};
