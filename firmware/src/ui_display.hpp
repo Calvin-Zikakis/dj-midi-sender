@@ -21,18 +21,20 @@ enum class UiMode : uint8_t {
 // Settings-menu items.
 enum MenuItem : uint8_t {
     kMenuItemMode = 0,    // Sync / Free
-    kMenuItemBpmStep,     // player-mode manual-BPM step (hold-tap + spin)
-    kMenuItemFineStep,    // Off-mode tap-tempo fine-tune step (spin)
+    kMenuItemBpmStep,     // BPM per detent for hold-tap + spin (follower sources,
+                          //   Free mode only)
+    kMenuItemFineStep,    // BPM per detent for plain spin when the BOX owns the
+                          //   tempo (off / mstr sources)
     kMenuItemOffsetStep,  // offset-button step per press
     kMenuItemCount,
 };
 
-// Player-mode manual-BPM step options (BPM per encoder detent).
+// Coarse BPM step: hold-tap + spin while following a deck in Free mode.
 inline constexpr float   kBpmStepValues[] = {0.1f, 0.5f, 1.0f, 5.0f};
 inline constexpr uint8_t kBpmStepCount    = 4;
 inline constexpr uint8_t kBpmStepDefault  = 2;  // index of 1.0 BPM
 
-// Off-mode tap-tempo fine-tune step options.
+// Fine BPM step: plain spin when the box owns the tempo (off / mstr).
 inline constexpr float   kFineStepValues[] = {0.1f, 0.25f, 0.5f, 1.0f};
 inline constexpr uint8_t kFineStepCount    = 4;
 inline constexpr uint8_t kFineStepDefault  = 0;  // 0.1 BPM

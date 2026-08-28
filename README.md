@@ -284,7 +284,10 @@ spin** trims BPM live (`MAN`). A master beat re-syncs.
 
 **Settings menu** — spin to scroll, push to edit, spin to change, push to save,
 tap to back. All persisted to NVS: **Mode** (Sync/Free), **BPM step**
-(0.1/0.5/1/5), **Tap fine** (0.1/0.25/0.5/1), **Offset step** (0.1/0.5/1 ms).
+(0.1/0.5/1/5), **Fine step** (0.1/0.25/0.5/1), **Offset step** (0.1/0.5/1 ms).
+
+Full gesture-by-gesture reference, including how each control changes meaning
+between follower and tempo-owner sources: **[docs/ui.md](docs/ui.md)**.
 
 The **encoder direction** is inverted from the raw quadrature to match the
 panel feel ([ui_input.cpp](firmware/src/ui_input.cpp)).

@@ -89,7 +89,7 @@ void render_menu(U8G2& oled, const UiSnapshot& s) {
         } else if (i == kMenuItemFineStep) {
             const uint8_t idx = ed ? static_cast<uint8_t>(s.menu_edit) : s.fine_step_idx;
             const double  v   = (idx < kFineStepCount) ? kFineStepValues[idx] : 0.1;
-            snprintf(buf, sizeof buf, "%s Tap fine: %s%g%s", mk, op, v, cl);
+            snprintf(buf, sizeof buf, "%s Fine step: %s%g%s", mk, op, v, cl);
         } else {  // kMenuItemOffsetStep
             const uint8_t idx = ed ? static_cast<uint8_t>(s.menu_edit) : s.offset_step_idx;
             const double  v   = (idx < kOffsetStepCount) ? kOffsetStepValues[idx] : 1.0;
@@ -153,7 +153,8 @@ void ui_display_render(const UiSnapshot& s) {
     // ── Source select + active master ──────────────────────────────────
     snprintf(buf, sizeof buf, "src %s", ui_source_label(s.selected_src));
     g_oled.drawStr(0, 48, buf);
-    snprintf(buf, sizeof buf, "mst %u", s.master_dev);
+    if (s.is_master) snprintf(buf, sizeof buf, "mst us");
+    else             snprintf(buf, sizeof buf, "mst %u", s.master_dev);
     g_oled.drawStr(74, 48, buf);
 
     // ── Offset (the nudge value) + link/USB status ─────────────────────
