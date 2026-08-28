@@ -18,3 +18,17 @@ target_include_directories(xdj_tests PRIVATE ${CMAKE_SOURCE_DIR}/firmware/src)
 target_compile_options(xdj_tests PRIVATE -Wall -Wextra)
 
 add_test(NAME prolink COMMAND xdj_tests)
+
+# The real POSIX socket layer. Separate binary because it compiles a desktop
+# source file directly — it needs no RtMidi or libpcap, so it still runs in CI
+# where the full desktop build is switched off.
+if(UNIX)
+    add_executable(xdj_udp_tests
+        test_udp_posix.cpp
+        ${CMAKE_SOURCE_DIR}/desktop/udp_posix.cpp
+    )
+    target_link_libraries(xdj_udp_tests PRIVATE prolink)
+    target_include_directories(xdj_udp_tests PRIVATE ${CMAKE_SOURCE_DIR}/desktop)
+    target_compile_options(xdj_udp_tests PRIVATE -Wall -Wextra)
+    add_test(NAME udp_posix COMMAND xdj_udp_tests)
+endif()
