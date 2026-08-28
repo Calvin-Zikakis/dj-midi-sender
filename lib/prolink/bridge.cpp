@@ -299,6 +299,7 @@ void Bridge::run() {
         }
 
         uint64_t t = now_ms();
+        step_device_claim(t);
         maybe_send_keepalive(t);
         maybe_stop_on_silence(t);
         maybe_resync(t);
@@ -590,8 +591,41 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     }
 }
 
+void Bridge::step_device_claim(uint64_t t) {
+    if (claim_done_ || !cfg_.send_vcdj_announce) return;
+    if (last_claim_ms_ != 0 && (t - last_claim_ms_) < 300) return;
+    last_claim_ms_ = t;
+
+    uint8_t pkt[64];
+    size_t  n = 0;
+    const uint8_t i = static_cast<uint8_t>((claim_step_ % 3) + 1);  // counter 1..3
+
+    if (claim_step_ < 3) {
+        n = build_announce_hello(pkt, sizeof(pkt), cfg_.device_name);
+    } else if (claim_step_ < 6) {
+        n = build_claim_stage1(pkt, sizeof(pkt), cfg_.device_name, cfg_.mac, i);
+    } else if (claim_step_ < 9) {
+        n = build_claim_stage2(pkt, sizeof(pkt), cfg_.device_name, cfg_.mac,
+                               cfg_.local_ip, cfg_.device_num, i,
+                               /*auto_assign*/ false);
+    } else {
+        n = build_claim_stage3(pkt, sizeof(pkt), cfg_.device_name,
+                               cfg_.device_num, i);
+    }
+    if (n) keepalive_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_KEEPALIVE);
+
+    if (++claim_step_ >= 12) {
+        claim_done_ = true;
+        char m[80];
+        std::snprintf(m, sizeof(m), "device-number claim complete for device %u",
+                      cfg_.device_num);
+        log(m);
+    }
+}
+
 void Bridge::maybe_send_keepalive(uint64_t t) {
     if (!cfg_.send_vcdj_announce) return;
+    if (!claim_done_) return;   // finish claiming the number before announcing
     if (t - last_keepalive_ms_ < cfg_.keepalive_period_ms) return;
     last_keepalive_ms_ = t;
 

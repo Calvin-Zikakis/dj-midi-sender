@@ -363,4 +363,86 @@ size_t build_master_handoff_response(uint8_t* out, size_t out_len,
     return PKT_LEN;
 }
 
+// ── Device-number claim handshake ──────────────────────────────────────────
+namespace {
+// These packets put the device name at 0x0C (20 bytes), unlike the beat/status
+// packets which use 0x0B.
+constexpr size_t CLAIM_NAME_OFF = 0x0C;
+
+void claim_header(uint8_t* out, uint8_t type, const char* device_name) {
+    std::memcpy(out, MAGIC, sizeof(MAGIC));   // 0x00..0x09
+    out[0x0A] = type;
+    out[0x0B] = 0x00;
+    for (size_t i = 0; i < 20; ++i) {
+        if (!device_name || device_name[i] == '\0') break;
+        out[CLAIM_NAME_OFF + i] = static_cast<uint8_t>(device_name[i]);
+    }
+}
+}  // namespace
+
+size_t build_announce_hello(uint8_t* out, size_t out_len, const char* device_name) {
+    constexpr size_t PKT_LEN = 0x26;  // 38
+    if (out_len < PKT_LEN) return 0;
+    std::memset(out, 0, PKT_LEN);
+    claim_header(out, 0x0A, device_name);
+    out[0x20] = 0x01;
+    out[0x21] = 0x04;
+    out[0x22] = 0x00;
+    out[0x23] = 0x26;   // packet length
+    out[0x24] = 0x01;
+    out[0x25] = 0x40;
+    return PKT_LEN;
+}
+
+size_t build_claim_stage1(uint8_t* out, size_t out_len, const char* device_name,
+                          const uint8_t mac[6], uint8_t counter) {
+    constexpr size_t PKT_LEN = 0x2C;  // 44
+    if (out_len < PKT_LEN) return 0;
+    std::memset(out, 0, PKT_LEN);
+    claim_header(out, 0x00, device_name);
+    out[0x20] = 0x01;
+    out[0x21] = 0x03;
+    out[0x22] = 0x00;
+    out[0x23] = 0x2C;      // packet length
+    out[0x24] = counter;   // 1..3
+    out[0x25] = 0x01;
+    std::memcpy(out + 0x26, mac, 6);
+    return PKT_LEN;
+}
+
+size_t build_claim_stage2(uint8_t* out, size_t out_len, const char* device_name,
+                          const uint8_t mac[6], uint32_t ip_host_order,
+                          uint8_t device_num, uint8_t counter, bool auto_assign) {
+    constexpr size_t PKT_LEN = 0x32;  // 50
+    if (out_len < PKT_LEN) return 0;
+    std::memset(out, 0, PKT_LEN);
+    claim_header(out, 0x02, device_name);
+    out[0x20] = 0x01;
+    out[0x21] = 0x03;
+    out[0x22] = 0x00;
+    out[0x23] = 0x32;                    // packet length
+    w32(out + 0x24, ip_host_order);      // our IP
+    std::memcpy(out + 0x28, mac, 6);     // our MAC
+    out[0x2E] = device_num;              // the number we are claiming
+    out[0x2F] = counter;                 // 1..3
+    out[0x30] = 0x01;
+    out[0x31] = auto_assign ? 0x01 : 0x02;  // 1 = auto-assign, 2 = specific
+    return PKT_LEN;
+}
+
+size_t build_claim_stage3(uint8_t* out, size_t out_len, const char* device_name,
+                          uint8_t device_num, uint8_t counter) {
+    constexpr size_t PKT_LEN = 0x26;  // 38
+    if (out_len < PKT_LEN) return 0;
+    std::memset(out, 0, PKT_LEN);
+    claim_header(out, 0x04, device_name);
+    out[0x20] = 0x01;
+    out[0x21] = 0x03;
+    out[0x22] = 0x00;
+    out[0x23] = 0x26;      // packet length
+    out[0x24] = device_num;
+    out[0x25] = counter;   // 1..3
+    return PKT_LEN;
+}
+
 }  // namespace prolink

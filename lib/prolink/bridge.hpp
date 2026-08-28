@@ -181,6 +181,9 @@ public:
 private:
     void handle_beat_packet(const uint8_t* buf, size_t len);
     void handle_status_packet(const uint8_t* buf, size_t len);
+    // Device-number claim handshake, stepped from the run loop at ~300 ms
+    // intervals. Keep-alives are held off until it completes.
+    void step_device_claim(uint64_t now_ms);
     void maybe_send_keepalive(uint64_t now_ms);
     void maybe_stop_on_silence(uint64_t now_ms);
     void maybe_resync(uint64_t now_ms);
@@ -240,6 +243,11 @@ private:
     uint64_t last_packet_ms_ = 0;
     uint64_t last_status_ms_ = 0;       // last successfully parsed status packet
     uint64_t last_keepalive_ms_ = 0;
+    // Device-number claim progress: 12 steps (hello x3, then claim stages
+    // 1/2/3 x3 each) at ~300 ms, then done. Keep-alives wait for it.
+    uint8_t  claim_step_ = 0;
+    uint64_t last_claim_ms_ = 0;
+    bool     claim_done_ = false;
     float    smoothed_bpm_ = 0.0f;      // EMA-filtered tempo (0 = bootstrap)
 
     // Bar-alignment tracking. If a beat packet is dropped, the master's
