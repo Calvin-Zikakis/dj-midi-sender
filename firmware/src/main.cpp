@@ -356,7 +356,13 @@ void bridge_task(void*) {
 
     prolink::BridgeConfig cfg;
 #ifdef MASTER_TEST
-    cfg.device_num = 4;  // tempo-master claims need a real deck number (1-4)
+    // Tempo-master claims want a real deck number. This rig already has 1+2
+    // (XDJ-XZ decks) and 3 (XDJ-700), so 4 is the only free deck slot.
+    // Override with -DMASTER_DEVICE_NUM=n when experimenting.
+    #ifndef MASTER_DEVICE_NUM
+    #define MASTER_DEVICE_NUM 4
+    #endif
+    cfg.device_num = MASTER_DEVICE_NUM;
 #else
     cfg.device_num = 7;  // safe slot (1-4 = decks, 5-6 = mixers; see docs/architecture.md)
 #endif
@@ -365,7 +371,11 @@ void bridge_task(void*) {
     cfg.local_ip            = kLocalIpHost;
     cfg.broadcast_ip        = kBroadcastIpHost;
     cfg.send_vcdj_announce  = true;
+#ifdef MASTER_TEST
+    cfg.verbose             = true;   // see 0x26 sends + the yield during the test
+#else
     cfg.verbose             = false;
+#endif
     cfg.fallback_bpm        = 120.0f;
     cfg.force_master_device = 0;
     cfg.bpm_smoothing_alpha = 0.3f;

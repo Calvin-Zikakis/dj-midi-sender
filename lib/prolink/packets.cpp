@@ -90,6 +90,7 @@ std::optional<StatusPacket> parse_status_packet(const uint8_t* buf, size_t len) 
     p.mv             = r16(buf + 0x90);   // BpmState: 0x8000 = rekordbox.
     p.beat_in_bar    = buf[0xA6];
     p.syncn          = r32(buf + 0x84);   // master-generation counter.
+    p.master_handoff = buf[0x9F];         // Mh: device being yielded master.
     return p;
 }
 
@@ -310,18 +311,21 @@ size_t build_master_handoff_request(uint8_t* out, size_t out_len,
         if (!device_name || device_name[i] == '\0') break;
         out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
     }
-    // Payload at 0x1F: 01 20 00 <dev> <len_r:2=0004> 00 00 00 <dev>
+    // Payload at 0x1F. Structure mirrors the real command packets we captured
+    // (e.g. the mixer 0x03: `01 <dev> <subtype> 00 <len_r:2> <body...>`), with
+    // the field values from Deep Symmetry's 0x26 diagram (subtype 0x20,
+    // len_r = 0x0004, body = the requesting device number as a uint32 BE).
     uint8_t* p = out + HDR_LEN;
-    p[0x00] = 0x01;
-    p[0x01] = 0x20;
-    p[0x02] = 0x00;
-    p[0x03] = device_num;
-    p[0x04] = 0x00;   // len_r hi
-    p[0x05] = 0x04;   // len_r lo (4 bytes follow)
+    p[0x00] = 0x01;          // constant
+    p[0x01] = device_num;    // sender's device number
+    p[0x02] = 0x20;          // subtype
+    p[0x03] = 0x00;
+    p[0x04] = 0x00;          // len_r hi
+    p[0x05] = 0x04;          // len_r lo (4 bytes follow)
     p[0x06] = 0x00;
     p[0x07] = 0x00;
     p[0x08] = 0x00;
-    p[0x09] = device_num;
+    p[0x09] = device_num;    // body: requesting device number
     return PKT_LEN;
 }
 
