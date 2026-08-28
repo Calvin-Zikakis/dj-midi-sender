@@ -36,6 +36,11 @@ uint32_t ui_input_take_menu_holds();
 // BPM modifier). Level, not an edge — not cleared on read.
 bool ui_input_tap_held();
 
+// millis() at which the tap button last settled, measured in the 1 ms input
+// task. Tap-tempo must use this rather than the UI frame clock, which would
+// quantise every interval by up to a frame (40 ms).
+uint32_t ui_input_tap_press_ms();
+
 // Bitmask (ButtonBit) of single-press buttons (encoder push, tap) that
 // registered a fresh press since the last call. Cleared on read.
 uint32_t ui_input_take_button_presses();

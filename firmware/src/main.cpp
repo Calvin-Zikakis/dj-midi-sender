@@ -265,7 +265,8 @@ constexpr float kDefaultClockOffsetMs = 30.0f;
 // nudge step is 1 ms, so that's full resolution). Writes are debounced by the
 // UI task so we don't wear the flash on every button press.
 constexpr const char* kNvsNamespace  = "xdjbridge";
-constexpr const char* kNvsKeyOffset  = "clk_off_ms";
+constexpr const char* kNvsKeyOffset   = "clk_off_ms";   // legacy: whole ms
+constexpr const char* kNvsKeyOffset10 = "clk_off_dms";  // tenths of a ms
 constexpr const char* kNvsKeyActPlayer  = "actplayer";// join the link as a player
 constexpr const char* kNvsKeyBpmStep    = "bpmstep";  // index into kBpmStepValues
 constexpr const char* kNvsKeyOffsetStep = "offstep";  // index into kOffsetStepValues
@@ -281,20 +282,30 @@ void nvs_init_once() {
 }
 
 // Load the saved offset, or `fallback` if nothing's stored yet.
+// Stored in tenths of a millisecond: the offset step can be 0.1 ms, so whole
+// milliseconds would silently discard a trim across a reboot. Falls back to the
+// old whole-millisecond key so an existing unit keeps its calibration.
 float nvs_load_offset_ms(float fallback) {
     nvs_handle_t h;
     if (nvs_open(kNvsNamespace, NVS_READONLY, &h) != ESP_OK) return fallback;
     int32_t v = 0;
-    esp_err_t err = nvs_get_i32(h, kNvsKeyOffset, &v);
+    float   out = fallback;
+    if (nvs_get_i32(h, kNvsKeyOffset10, &v) == ESP_OK) {
+        out = static_cast<float>(v) / 10.0f;
+    } else if (nvs_get_i32(h, kNvsKeyOffset, &v) == ESP_OK) {
+        out = static_cast<float>(v);           // migrate from the legacy key
+    }
     nvs_close(h);
-    return (err == ESP_OK) ? static_cast<float>(v) : fallback;
+    return out;
 }
 
 void nvs_save_offset_ms(float ms) {
     nvs_handle_t h;
     if (nvs_open(kNvsNamespace, NVS_READWRITE, &h) != ESP_OK) return;
-    const int32_t rounded = static_cast<int32_t>(ms < 0.0f ? ms - 0.5f : ms + 0.5f);
-    nvs_set_i32(h, kNvsKeyOffset, rounded);
+    const float tenths = ms * 10.0f;
+    const int32_t rounded =
+        static_cast<int32_t>(tenths < 0.0f ? tenths - 0.5f : tenths + 0.5f);
+    nvs_set_i32(h, kNvsKeyOffset10, rounded);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -562,6 +573,28 @@ void i2c_scan_diag() {
 // against the live Bridge, and renders the OLED. Runs on Core 0 (away from
 // the clock-critical bridge/timer on Core 1) at 25 fps over hardware I2C;
 // unchanged frames are not transmitted (see ui_display.cpp).
+// Push a clock-source selection to the bridge. `g_selected_src` is the single
+// source of truth for what the panel claims; this is the only thing that makes
+// the bridge agree with it, so every path that changes the selection must call
+// it — the confirm handler, and the fallbacks that fire when the box loses or
+// releases the master role. Skipping it used to leave a deck pinned (or the box
+// standalone) while the panel showed `follower master`.
+void ui_apply_source(prolink::Bridge* b, uint8_t src) {
+    if (!b) return;
+    if (src != firmware::kSourceMaster && b->master_mode()) {
+        b->set_master_mode(false);   // graceful release, appoints a deck
+    }
+    if (src == firmware::kSourceMaster) {
+        b->set_master_mode(true);
+    } else if (src == firmware::kSourceOff) {
+        b->set_ignore_master(true);
+        b->set_force_master_device(0);
+    } else {
+        b->set_ignore_master(false);
+        b->set_force_master_device(src);   // 0 = auto-track the master flag
+    }
+}
+
 void ui_task(void*) {
     firmware::ui_display_begin();
 #ifdef DIAG_SERIAL_STUB
@@ -571,6 +604,9 @@ void ui_task(void*) {
     // Front-panel UI mode + menu state.
     firmware::UiMode   ui_mode          = firmware::UiMode::kNormal;
     uint8_t            proposed_src     = 0;
+    // What we have actually pushed to the bridge, so a selection made before
+    // the bridge existed still takes effect.
+    uint8_t            last_applied_src = 0;
     uint8_t            menu_index       = 0;
     int32_t            edit_value       = 0;
     uint32_t           mode_activity_ms = 0;
@@ -599,8 +635,10 @@ void ui_task(void*) {
     uint32_t tap_down_ms       = 0;
     bool     tap_moved         = false;  // spun while tap held → it's the modifier
     bool     tap_consumed      = false;  // used as back/cancel by a sub-mode
+    bool     tap_owns_tempo    = false;  // gesture meaning, latched at the press
     bool     prev_tap_held     = false;
     uint32_t resync_flash_until = 0;      // OLED "RSYNC" confirmation window
+    bool     resync_flash_armed = false;
     constexpr uint32_t kTapMaxMs = 400;   // longer press = a hold, not a tap
 
     // Debounced NVS persistence of the clock offset.
@@ -620,7 +658,18 @@ void ui_task(void*) {
 
         // Track the tap gesture across every mode so a clean short tap (no spin)
         // can be recognized on release. Consumed only in Normal / non-off below.
-        if (btns & firmware::kBtnTap) { tap_down_ms = now; tap_moved = false; tap_consumed = false; }
+        if (btns & firmware::kBtnTap) {
+            tap_down_ms   = now;
+            tap_moved     = false;
+            tap_consumed  = false;
+            // Latch the gesture's meaning at the press. The source can change
+            // underneath us (a deck reclaiming master resets it), and without
+            // this a tap that began as tap-tempo would also fire a re-sync on
+            // release.
+            const uint8_t src_at_press = g_selected_src.load();
+            tap_owns_tempo = (src_at_press == firmware::kSourceOff ||
+                              src_at_press == firmware::kSourceMaster);
+        }
         if (tap_held && steps != 0)   tap_moved = true;
 
 #ifdef DIAG_SERIAL_STUB
@@ -641,8 +690,12 @@ void ui_task(void*) {
                 // Box owns the tempo: plain spin adjusts BPM, tap = tap-tempo.
                 if (b && steps != 0) b->nudge_manual_bpm(static_cast<float>(steps) * bpm_step);
                 if (btns & firmware::kBtnTap) {
-                    const uint32_t dt = now - tap_prev_ms;
-                    tap_prev_ms = now;
+                    // Timed at the button settle, not at this frame: the UI
+                    // runs at 25 fps, so frame-clock timing would quantise
+                    // every interval by up to 40 ms (~8% of a beat at 128 BPM).
+                    const uint32_t press = firmware::ui_input_tap_press_ms();
+                    const uint32_t dt = press - tap_prev_ms;
+                    tap_prev_ms = press;
                     if (dt > 250 && dt < 2000) {          // 30..240 BPM
                         tap_intervals[tap_head] = static_cast<float>(dt);
                         tap_head = (tap_head + 1) % kTapAvgMax;
@@ -659,9 +712,11 @@ void ui_task(void*) {
                 // Following a deck: a clean short tap re-syncs the slave on the
                 // master's next downbeat.
                 if (prev_tap_held && !tap_held && !tap_moved && !tap_consumed &&
+                    !tap_owns_tempo &&
                     (now - tap_down_ms) < kTapMaxMs && b) {
                     b->request_resync(/*immediate*/ false);
                     resync_flash_until = now + 900;
+                    resync_flash_armed = true;
                 }
             }
 
@@ -676,10 +731,14 @@ void ui_task(void*) {
                 mode_activity_ms = now;
                 ui_mode          = firmware::UiMode::kMenu;
             }
-            // Encoder push → enter source-select (not while tap is held — that's
-            // the player-mode BPM modifier).
-            if (!tap_held && (btns & firmware::kBtnEncSw)) {
+            // Encoder push → enter source-select.
+            if (btns & firmware::kBtnEncSw) {
                 proposed_src     = g_selected_src.load();
+                // If the active source is hidden (the gate was turned off while
+                // it was selected) the list would render with no cursor at all.
+                if (proposed_src == firmware::kSourceMaster && !act_as_player) {
+                    proposed_src = 0;
+                }
                 mode_activity_ms = now;
                 ui_mode          = firmware::UiMode::kSourceSelect;
             }
@@ -702,21 +761,19 @@ void ui_task(void*) {
                 mode_activity_ms = now;
             }
             if (btns & firmware::kBtnEncSw) {              // push = confirm
+                // Never act on the gated entry, even if stale state left the
+                // cursor on it (e.g. the setting was turned off meanwhile).
+                if (proposed_src == firmware::kSourceMaster && !act_as_player) {
+                    proposed_src = 0;
+                }
+                const uint8_t previous = g_selected_src.load();
                 g_selected_src.store(proposed_src);
-                if (b) {
-                    // Leaving master hands the role to a deck (graceful
-                    // release); entering it claims the role via the handoff.
-                    if (proposed_src != firmware::kSourceMaster && b->master_mode())
-                        b->set_master_mode(false);
-
-                    if (proposed_src == firmware::kSourceMaster) {
-                        b->set_master_mode(true);          // box drives the link
-                    } else if (proposed_src == firmware::kSourceOff) {
-                        b->set_ignore_master(true);        // standalone tempo
-                    } else {
-                        b->set_ignore_master(false);
-                        b->set_force_master_device(proposed_src);
-                    }
+                // Re-confirming the *same* source is a no-op. Re-running it for
+                // `sync master` would drop mm=1 and renegotiate the whole
+                // handoff mid-set.
+                if (proposed_src != previous) {
+                    ui_apply_source(b, proposed_src);
+                    last_applied_src = proposed_src;
                 }
                 ui_mode = firmware::UiMode::kNormal;
             } else if (btns & firmware::kBtnTap) {         // tap = cancel/back
@@ -761,10 +818,14 @@ void ui_task(void*) {
                 if (menu_index == firmware::kMenuItemActAsPlayer) {
                     act_as_player = (edit_value != 0);
                     nvs_save_i32(kNvsKeyActPlayer, edit_value);
-                    // Turning it off must not strand us holding the master role.
-                    if (!act_as_player && b && b->master_mode()) {
-                        b->set_master_mode(false);
+                    // Turning it off must never leave `sync master` selected —
+                    // including when the bridge does not exist yet, or the
+                    // selection would survive to be applied later.
+                    if (!act_as_player &&
+                        g_selected_src.load() == firmware::kSourceMaster) {
                         g_selected_src.store(0);
+                        ui_apply_source(b, 0);
+                        last_applied_src = 0;
                     }
                 } else if (menu_index == firmware::kMenuItemBpmStep) {
                     bpm_step_idx = static_cast<uint8_t>(edit_value);
@@ -804,9 +865,21 @@ void ui_task(void*) {
         }
 
         // If a deck reclaimed master from us, the bridge drops master mode on
-        // its own — fall the UI back to `auto` so the panel matches reality.
+        // its own — fall the panel back to `follower master`, and actually
+        // apply it: the bridge may still be pinned to a deck or standalone from
+        // whatever was selected before master mode.
         if (b && g_selected_src.load() == firmware::kSourceMaster && !b->master_mode()) {
             g_selected_src.store(0);
+            ui_apply_source(b, 0);
+            last_applied_src = 0;
+        }
+
+        // The bridge does not exist until Ethernet is up, so a source chosen
+        // before then reached the panel but never the bridge. Apply it once the
+        // bridge appears (and after any change that could not be pushed).
+        if (b && last_applied_src != g_selected_src.load()) {
+            last_applied_src = g_selected_src.load();
+            ui_apply_source(b, last_applied_src);
         }
 
         // Snapshot live state for the display.
@@ -832,7 +905,10 @@ void ui_task(void*) {
         s.bpm_step_idx    = bpm_step_idx;
         s.offset_step_idx = offset_step_idx;
         s.pitch_pct    = g_pitch_pct.load();
-        s.resync_flash = (now < resync_flash_until);
+        // Unsigned difference, like every other timer here: an absolute
+        // comparison misbehaves once per millis() wrap (~49 days).
+        s.resync_flash = resync_flash_armed &&
+                         static_cast<int32_t>(now - resync_flash_until) < 0;
         if (b) {
             s.master_wanted = b->master_mode();
             s.is_master     = b->is_tempo_master();

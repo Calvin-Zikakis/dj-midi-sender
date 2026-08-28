@@ -102,7 +102,9 @@ void render_source_select(U8G2& oled, const UiSnapshot& s) {
     const uint8_t n = source_count(s.act_as_player);
     for (uint8_t i = 0; i < n; ++i) {
         const uint8_t src = source_at(i, s.act_as_player);
-        const int y = 14 + i * 7;  // up to 7 entries: 14..56, clear of the footer
+        // 6 px pitch: this font's glyphs span baseline-6..baseline+1, so a 7 px
+        // pitch let the last row's descenders touch the footer at baseline 63.
+        const int y = 14 + i * 6;  // up to 7 entries: 14..50
         snprintf(buf, sizeof buf, "%s %s%s",
                  (src == s.proposed_src) ? ">" : " ",
                  ui_source_label_long(src),

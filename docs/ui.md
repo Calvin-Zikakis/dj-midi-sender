@@ -54,7 +54,7 @@ below say "tempo-owner", they behave identically.
 |---|---|---|
 | **Spin** | nothing | **adjust BPM** by *BPM step* |
 | **Tap** (short) | **re-sync**: re-emit MIDI Start on the master's next downbeat, realigning a slave that lost bar alignment. Flashes `RSYN` | **tap-tempo**: averages the last 8 taps (250-2000 ms apart; a longer gap starts a new series) |
-| **Nudge -/+** | trim the clock offset by *Offset step*; hold to auto-repeat with acceleration. Persists to NVS ~2 s after it stops changing | same |
+| **Nudge -/+** | trim the clock offset by *Offset step*; hold to auto-repeat with acceleration. Persists to NVS (in tenths of a ms) ~2 s after it stops changing | same |
 | **Hold both nudges ~1 s** | open the Settings menu | same |
 | **Push encoder** | open Source-select | same |
 
@@ -130,7 +130,17 @@ three settings persist to NVS.
   itself instead of staying stale forever.
 - **Taking master is opt-in, not one spin away.** "Act as player" gates it, so
   the destructive option is absent from the list until you have said you want
-  the box on the link as a player.
+  the box on the link as a player. Re-confirming a source that is already
+  active does nothing, so it cannot renegotiate the handoff by accident.
+- **The selected source is the single source of truth.** One helper pushes it
+  to the bridge, and every path that changes the selection goes through it —
+  including a selection made before Ethernet is up, and the fallback that fires
+  when a deck reclaims the master role. Otherwise the panel and the bridge can
+  disagree: a deck stays pinned, or the box stays standalone, while the screen
+  claims it is following.
+- **The first nudge of the menu combo is escrowed.** Debouncing is per-button,
+  so the first of the two settles ~25 ms before the second; without holding it
+  back, every menu open trimmed the clock offset by one step.
 
 ## History
 
