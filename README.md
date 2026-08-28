@@ -289,7 +289,15 @@ adjust BPM by the *BPM step*.
 
 **Settings menu** — spin to scroll, push to edit, spin to change, push to save,
 tap to back. All persisted to NVS: **Act as player** (yes/no — unlocks
-`sync master`), **BPM step** (0.1/0.25/0.5/1), **Offset step** (0.1/0.5/1 ms).
+`sync master`), **BPM step** (0.1/0.25/0.5/1), **Offset step** (0.1/0.5/1 ms),
+**Keep playing** (yes/no).
+
+**Keep playing** holds the clock when the decks you are following stop, instead
+of sending MIDI Stop, so a track ending does not kill the drum machine. The
+panel shows `HOLD`. With *Act as player* on it also claims `sync master`, so a
+deck that restarts with sync on locks back to the box rather than dragging your
+gear to its tempo; with it off the hold is purely local. See
+[docs/ui.md](docs/ui.md#keep-playing).
 
 Full gesture-by-gesture reference, including how each control changes meaning
 between follower and tempo-owner sources: **[docs/ui.md](docs/ui.md)**.

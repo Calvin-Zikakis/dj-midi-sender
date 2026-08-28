@@ -46,6 +46,10 @@ design, and [docs/hardware.md](docs/hardware.md) for the board and wiring.
   wire formats and the bridge state machine; GitHub Actions runs it on
   gcc/clang/macOS, under ASan/TSan/UBSan, and builds the desktop and firmware
   targets.
+- **Keep playing.** A panel setting that holds the MIDI clock when the decks
+  stop instead of sending MIDI Stop, so a track change does not kill downstream
+  gear. With *Act as player* on it also claims the DJ-Link master role, so a
+  restarting deck locks back to the box.
 
 ## Next
 

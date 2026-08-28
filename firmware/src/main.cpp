@@ -270,6 +270,7 @@ constexpr const char* kNvsKeyOffset10 = "clk_off_dms";  // tenths of a ms
 constexpr const char* kNvsKeyActPlayer  = "actplayer";// join the link as a player
 constexpr const char* kNvsKeyBpmStep    = "bpmstep";  // index into kBpmStepValues
 constexpr const char* kNvsKeyOffsetStep = "offstep";  // index into kOffsetStepValues
+constexpr const char* kNvsKeyKeepPlaying = "keepplay"; // hold clock when decks stop
 // (Keys "mode" and "finestep" were retired with the Sync/Free toggle and the
 // second BPM-step setting; any stale values on existing units are ignored.)
 
@@ -616,6 +617,9 @@ void ui_task(void*) {
     // Step settings (indices into the option arrays), persisted via the menu.
     auto clamp_idx = [](int32_t v, int32_t n) { if (v < 0) v = 0; if (v >= n) v = n - 1; return v; };
     bool act_as_player      = nvs_load_i32(kNvsKeyActPlayer, 0) != 0;
+    bool keep_playing       = nvs_load_i32(kNvsKeyKeepPlaying, 0) != 0;
+    // One auto-claim per stop episode — see the latch below.
+    bool auto_master_armed  = true;
     uint8_t bpm_step_idx    = static_cast<uint8_t>(clamp_idx(
         nvs_load_i32(kNvsKeyBpmStep, firmware::kBpmStepDefault), firmware::kBpmStepCount));
     uint8_t offset_step_idx = static_cast<uint8_t>(clamp_idx(
@@ -657,6 +661,27 @@ void ui_task(void*) {
         // Let the bridge tell a network fault apart from the music stopping:
         // a link blip must not send MIDI Stop and restart on a downbeat.
         if (b) b->set_link_up(g_link_up);
+        if (b) b->set_keep_playing(keep_playing);
+
+        // "Keep playing" with a player slot: when the decks stop, claim the
+        // DJ-Link master role too, so a deck that restarts with sync on locks
+        // back to the box instead of dragging the gear to its own tempo. It
+        // goes through the normal source selection, so the panel shows what
+        // the box is actually doing and the release path already works.
+        //
+        // Fire once per stop episode. Without the latch, a DJ reclaiming
+        // master while the decks are still stopped would drop us back to
+        // follower master, we would see "holding" again and immediately grab
+        // it back — the box and the DJ fighting over the role. Re-arm only
+        // once a deck is genuinely driving us again.
+        if (b && !b->holding() && !b->master_mode() && b->is_playing()) {
+            auto_master_armed = true;
+        }
+        if (b && keep_playing && act_as_player && auto_master_armed &&
+            b->holding() && g_selected_src.load() != firmware::kSourceMaster) {
+            auto_master_armed = false;
+            g_selected_src.store(firmware::kSourceMaster);
+        }
         const bool tap_held = firmware::ui_input_tap_held();
 
         // Track the tap gesture across every mode so a clean short tap (no spin)
@@ -796,7 +821,8 @@ void ui_task(void*) {
             if (btns & firmware::kBtnEncSw) {
                 edit_value = (menu_index == firmware::kMenuItemActAsPlayer) ? (act_as_player ? 1 : 0)
                            : (menu_index == firmware::kMenuItemBpmStep)      ? bpm_step_idx
-                                                                            : offset_step_idx;
+                           : (menu_index == firmware::kMenuItemOffsetStep)   ? offset_step_idx
+                                                                            : (keep_playing ? 1 : 0);
                 mode_activity_ms = now;
                 ui_mode          = firmware::UiMode::kMenuEdit;
             } else if (btns & firmware::kBtnTap) {
@@ -808,7 +834,8 @@ void ui_task(void*) {
         } else if (ui_mode == firmware::UiMode::kMenuEdit) {
             // Spin changes the working value; push commits + saves; tap cancels.
             if (steps != 0) {
-                const int32_t n = (menu_index == firmware::kMenuItemActAsPlayer) ? 2
+                const int32_t n = (menu_index == firmware::kMenuItemActAsPlayer)  ? 2
+                                : (menu_index == firmware::kMenuItemKeepPlaying) ? 2
                                 : (menu_index == firmware::kMenuItemBpmStep)
                                       ? firmware::kBpmStepCount
                                       : firmware::kOffsetStepCount;
@@ -833,9 +860,12 @@ void ui_task(void*) {
                 } else if (menu_index == firmware::kMenuItemBpmStep) {
                     bpm_step_idx = static_cast<uint8_t>(edit_value);
                     nvs_save_i32(kNvsKeyBpmStep, edit_value);
-                } else {
+                } else if (menu_index == firmware::kMenuItemOffsetStep) {
                     offset_step_idx = static_cast<uint8_t>(edit_value);
                     nvs_save_i32(kNvsKeyOffsetStep, edit_value);
+                } else {
+                    keep_playing = (edit_value != 0);
+                    nvs_save_i32(kNvsKeyKeepPlaying, edit_value);
                 }
                 mode_activity_ms = now;
                 ui_mode          = firmware::UiMode::kMenu;
@@ -905,6 +935,8 @@ void ui_task(void*) {
         s.menu_index      = menu_index;
         s.menu_edit       = edit_value;
         s.act_as_player   = act_as_player;
+        s.keep_playing    = keep_playing;
+        s.holding         = b ? b->holding() : false;
         s.bpm_step_idx    = bpm_step_idx;
         s.offset_step_idx = offset_step_idx;
         s.pitch_pct    = g_pitch_pct.load();

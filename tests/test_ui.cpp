@@ -82,9 +82,12 @@ void test_mapping_is_identity_below_the_gate() {
 
 void test_menu_and_step_tables_are_consistent() {
     section("ui: menu and step tables agree with their declared sizes");
-    CHECK(kMenuItemCount == 3);
+    CHECK(kMenuItemCount == 4);
     CHECK(kMenuItemActAsPlayer < kMenuItemBpmStep);
     CHECK(kMenuItemBpmStep < kMenuItemOffsetStep);
+    CHECK(kMenuItemOffsetStep < kMenuItemKeepPlaying);
+    // Four rows at an 11 px pitch must clear the footer's baseline at 62.
+    CHECK(18 + (kMenuItemCount - 1) * 11 + 1 < 62);
     // Defaults must index inside their tables, or the menu renders garbage.
     CHECK(kBpmStepDefault < kBpmStepCount);
     CHECK(kOffsetStepDefault < kOffsetStepCount);

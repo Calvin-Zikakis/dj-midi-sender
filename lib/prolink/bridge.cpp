@@ -312,6 +312,10 @@ void Bridge::set_ignore_master(bool on) {
     // Enabling forces the manual-tempo source (the run loop then cold-starts
     // the clock); disabling resumes normal sync.
     manual_active_.store(on);
+    // "Holding" only describes following decks that have stopped. Ignoring
+    // them outright — standalone, or the box taking the master role — is a
+    // different state, and leaving the flag set would keep HOLD on the panel.
+    if (on) holding_.store(false);
 }
 
 void Bridge::push_offset_to_clock_() {
@@ -696,7 +700,18 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     if (last_master_playing_ != pending_play_state_ &&
         (t - pending_play_change_ms_) >= cfg_.play_debounce_ms) {
         last_master_playing_ = pending_play_state_;
-        if (!last_master_playing_ && playing_.load() &&
+        if (last_master_playing_) {
+            holding_.store(false);   // a deck is driving us again
+        } else if (playing_.load() &&
+                   !free_run_.load() && !ignore_master_.load() &&
+                   keep_playing_.load()) {
+            // "Keep playing": the deck stopped but the clock carries on at
+            // its latched tempo, so a drum machine or lighting rig keeps its
+            // groove across a track change instead of dropping out.
+            if (!holding_.exchange(true) && cfg_.verbose) {
+                log("hold (decks stopped, keep playing)");
+            }
+        } else if (!last_master_playing_ && playing_.load() &&
             !free_run_.load() && !ignore_master_.load()) {
             // Playing → stopped: kill the clock immediately. (Skipped in
             // free-run / ignore: the clock keeps going on its latched tempo.)
@@ -804,6 +819,15 @@ void Bridge::maybe_stop_on_silence(uint64_t t) {
     const uint32_t timeout = link_up_.load() ? cfg_.silence_timeout_ms
                                              : cfg_.link_down_grace_ms;
     if (t - last_packet_ms_ < timeout) return;
+    if (keep_playing_.load()) {
+        // Same bargain as a stopped deck: the operator asked the box to carry
+        // on, so silence — a deck powered off, a cable pulled — holds the
+        // latched tempo rather than stopping.
+        if (!holding_.exchange(true) && cfg_.verbose) {
+            log("hold (link quiet, keep playing)");
+        }
+        return;
+    }
     playing_.store(false);
     waiting_for_downbeat_ = false;
     last_master_playing_ = false;
