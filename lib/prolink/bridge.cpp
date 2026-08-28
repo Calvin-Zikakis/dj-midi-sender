@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 namespace prolink {
 
@@ -39,6 +40,7 @@ Bridge::Bridge(IUdpSocket& beat_sock,
     , cb_(std::move(cb)) {
     last_known_bpm_.store(cfg_.fallback_bpm);
     active_device_num_.store(cfg_.device_num);
+    idle_device_num_ = cfg_.device_num;   // seeded up front, never 0
     force_master_device_.store(cfg_.force_master_device);
 }
 
@@ -126,19 +128,27 @@ void Bridge::apply_master_mode_request() {
         // Claim a player slot for the duration — only those can hold master.
         restart_device_claim(cfg_.master_device_num);
         // Remember how we were running so releasing master restores it rather
-        // than always reverting to "follow a deck".
-        pre_master_ignore_ = ignore_master_.load();
+        // than always reverting to "follow a deck" — but only on the real
+        // transition, or re-entering master would capture the standalone state
+        // we forced on ourselves last time.
+        if (!master_applied_) {
+            pre_master_ignore_.store(ignore_master_.load());
+            master_applied_ = true;
+        }
         // Take over at the tempo we were already following, so grabbing master
         // mid-set doesn't lurch the music. The DJ nudges from there.
         const float following = last_known_bpm_.load();
-        if (following > 0.0f) manual_bpm_.store(following);
+        if (bpm_is_sane(following)) manual_bpm_.store(following);
         // Keep requesting the handoff for a while (5 Hz cadence) until the
         // master yields; ~6 s ceiling so we don't spam forever if it never does.
         master_request_countdown_ = 30;
         // Master mode is standalone: we run our own tempo and ignore other
-        // decks. set_ignore_master() latches the manual tempo and the run loop
-        // cold-starts the clock, whose per-beat callback drives beat emission.
-        set_ignore_master(true);
+        // decks. Set the flags directly rather than via set_ignore_master(),
+        // which records a *user* choice and would overwrite the value we just
+        // captured. The run loop then cold-starts the clock, whose per-beat
+        // callback drives beat emission.
+        ignore_master_.store(true);
+        manual_active_.store(true);
         return;
     }
 
@@ -162,14 +172,23 @@ void Bridge::apply_master_mode_request() {
                       target, ok ? "(0x2a sent)" : "(SEND FAILED)");
         log(m);
     } else {
-        // Not actually holding it — drop out of master mode immediately.
-        master_mode_.store(false);
-        master_confirmed_.store(false);
-        yielding_to_.store(0);
-        release_deadline_ms_ = 0;
-        restart_device_claim(idle_device_num_);
+        // Not actually holding it — drop straight out. This path used to skip
+        // restoring the pre-master source, which left the box silently
+        // standalone (ignoring every deck) with the panel showing otherwise.
+        leave_master_mode_();
     }
     master_request_countdown_ = 0;
+}
+
+void Bridge::leave_master_mode_() {
+    master_mode_.store(false);
+    master_confirmed_.store(false);
+    yielding_to_.store(0);
+    release_deadline_ms_ = 0;
+    master_request_countdown_ = 0;
+    master_applied_ = false;
+    restart_device_claim(idle_device_num_);   // give the player slot back
+    set_ignore_master(pre_master_ignore_.load());
 }
 
 void Bridge::on_master_beat() {
@@ -188,17 +207,23 @@ void Bridge::on_master_beat() {
 
 void Bridge::handle_master_yield_request(uint8_t requester, uint32_t requester_ip) {
     if (requester == 0 || requester == active_device_num_.load()) return;
-    if (yielding_to_.load() == requester) return;   // already yielding to it
+    const bool repeat = (yielding_to_.load() == requester);
 
     // Acknowledge (0x27) unicast on the STATUS port, and start advertising the
     // requester in our Mh. We step down once it asserts master (see
     // handle_status_packet), completing the documented handoff dance.
     yielding_to_.store(requester);
+    // Bound the handoff. Without a deadline, a deck that asks and then gives up
+    // (or is unplugged) leaves us asserting master while advertising Mh
+    // forever, telling the whole link that master is permanently in transit.
+    release_deadline_ms_ = now_ms() + 3000;
     uint8_t ack[64];
     size_t an = build_master_handoff_response(ack, sizeof(ack),
                                               cfg_.device_name,
                                               active_device_num_.load());
+    // Re-ACK on a repeat request: the deck may not have seen the first one.
     bool ok = an && status_sock_.send(ack, an, requester_ip, PORT_STATUS);
+    if (repeat) return;
     char m[96];
     std::snprintf(m, sizeof(m), "yield request from device %u — ACK 0x27 %s",
                   requester, ok ? "sent" : "FAILED");
@@ -211,12 +236,7 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
     // A release was requested but the appointed deck never claimed master —
     // step down anyway rather than holding it hostage.
     if (release_deadline_ms_ != 0 && t >= release_deadline_ms_) {
-        release_deadline_ms_ = 0;
-        yielding_to_.store(0);
-        master_confirmed_.store(false);
-        master_mode_.store(false);
-        set_ignore_master(pre_master_ignore_);
-        restart_device_claim(idle_device_num_);
+        leave_master_mode_();
         log("release timed out — dropping master anyway");
         return;
     }
@@ -250,7 +270,10 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
                     master_request_countdown_);
                 log(m);
             }
-        } else {
+        } else if (t - last_waiting_log_ms_ > 5000) {
+            // Fires at the status cadence otherwise — forever, when the box is
+            // alone on the link and no master will ever be learned.
+            last_waiting_log_ms_ = t;
             log("master mode: waiting to learn the current master's IP");
         }
     }
@@ -269,6 +292,9 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
 }
 
 void Bridge::set_ignore_master(bool on) {
+    // Called from the UI: this is the user stating what they want the box to
+    // do, so it also becomes what a pending master release restores to.
+    pre_master_ignore_.store(on);
     ignore_master_.store(on);
     // Enabling forces the manual-tempo source (the run loop then cold-starts
     // the clock); disabling resumes normal sync.
@@ -281,7 +307,7 @@ void Bridge::push_offset_to_clock_() {
 }
 
 void Bridge::apply_tempo_(float bpm) {
-    if (bpm <= 0.0f) return;
+    if (!bpm_is_sane(bpm)) return;
     // While standalone or acting as tempo master we ARE the authority: never
     // let a deck's tempo drive our clock. (manual_active_ normally covers this,
     // but it can be cleared independently — e.g. toggling Sync/Free in the
@@ -309,14 +335,20 @@ void Bridge::run() {
     uint8_t buf[RECV_BUF_LEN];
 
     while (running_.load()) {
-        // Round-robin both listener sockets with short timeouts.
+        // Round-robin both listener sockets with short timeouts. A negative
+        // return is a socket error, not a timeout: recv returns immediately in
+        // that case, so treating it like a timeout would spin this loop at
+        // full tilt (and starve the idle task on the firmware).
+        bool sock_error = false;
         uint32_t beat_src = 0;
         int n = beat_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS, &beat_src);
+        if (n < 0) sock_error = true;
         if (n > 0) {
             if (cb_.on_raw_datagram) cb_.on_raw_datagram(PORT_BEAT, buf, static_cast<size_t>(n));
             // A deck asking US to yield the master role (0x26). Always honor it
             // so a DJ can reclaim master from the box at any time.
-            if (n > 0x21 && buf[0x0A] == PKT_TYPE_MASTER_HANDOFF_REQ &&
+            if (n > 0x21 && has_prolink_magic(buf, static_cast<size_t>(n)) &&
+                buf[0x0A] == PKT_TYPE_MASTER_HANDOFF_REQ &&
                 master_mode_.load() && master_confirmed_.load()) {
                 handle_master_yield_request(buf[0x1F + 2], beat_src);
             }
@@ -325,17 +357,34 @@ void Bridge::run() {
 
         uint32_t status_src = 0;
         n = status_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS, &status_src);
+        if (n < 0) sock_error = true;
         if (n > 0) {
             last_status_src_ip_ = status_src;
             if (cb_.on_raw_datagram) cb_.on_raw_datagram(PORT_STATUS, buf, static_cast<size_t>(n));
             // The master's yield acknowledgement (0x27) arrives here, on the
             // status port — not on 50001 where we sent the request.
-            if (n > 0x0A && buf[0x0A] == PKT_TYPE_MASTER_HANDOFF_RESP &&
+            // Only from the device we actually asked, and only if it looks
+            // like a Pro DJ Link packet: otherwise any datagram on this port
+            // whose 11th byte happened to be 0x27 would make us assert master
+            // alongside the real one.
+            if (n > 0x0A && has_prolink_magic(buf, static_cast<size_t>(n)) &&
+                buf[0x0A] == PKT_TYPE_MASTER_HANDOFF_RESP &&
+                status_src == master_ip_.load() &&
                 master_mode_.load() && !master_confirmed_.load()) {
                 master_confirmed_.store(true);
                 log("master yield ACK (0x27) received — asserting mm=1");
             }
             handle_status_packet(buf, static_cast<size_t>(n));
+        }
+
+        if (sock_error) {
+            // Back off rather than spin. Rate-limit the log too: a wedged
+            // socket would otherwise flood the console.
+            if (t_last_sock_err_ == 0 || now_ms() - t_last_sock_err_ > 5000) {
+                t_last_sock_err_ = now_ms();
+                log("socket error on receive — backing off");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(RECV_TIMEOUT_MS));
         }
 
         uint64_t t = now_ms();
@@ -371,8 +420,15 @@ void Bridge::stop() {
 void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     auto parsed = parse_beat_packet(buf, len);
     if (!parsed) return;
+    // Broadcasts loop back to sockets bound to the same port, so while acting
+    // as master our own beat packets arrive here. Without this the bridge
+    // latches ITSELF as current_master_, inflates the packet counters that
+    // drive silence detection, and then cannot find a deck to appoint on
+    // release. The status path has the same guard.
+    if (parsed->device_num == active_device_num_.load()) return;
     if (cb_.on_beat_raw) cb_.on_beat_raw(buf, len);
     last_packet_ms_ = now_ms();
+    last_beat_ms_   = last_packet_ms_;
     beat_count_.fetch_add(1, std::memory_order_relaxed);
 
     // Master claim from beat packets. If --follow-device was passed, pin
@@ -425,8 +481,12 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     // status_silence_fallback_ms (default 500 ms — ~2 missed status packets
     // at 5 Hz).
     {
+        // effective_bpm() is track BPM x pitch, both straight off the network,
+        // so the product spans ~1e-8 to ~2.7e6. Anything outside the range the
+        // wire format can represent is garbage and must not reach the clock or
+        // last_known_bpm_ (which is what we re-broadcast as master).
         float bpm = parsed->effective_bpm();
-        if (bpm > 0.0f) {
+        if (bpm_is_sane(bpm)) {
             bool status_recently_seen =
                 (last_status_ms_ != 0) &&
                 ((now_ms() - last_status_ms_) < cfg_.status_silence_fallback_ms);
@@ -526,8 +586,14 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     if (cb_.on_status_raw) cb_.on_status_raw(buf, len);
     // Track the highest master-generation counter any peer reports, so a master
     // takeover can announce Syncn = max+1 (required for CDJs to yield master).
+    // Syncn comes off the wire and we only ever ratchet it upward, so a single
+    // absurd value would stick — and max+1 wrapping to 0 would advertise the
+    // lowest possible generation, silently making a takeover impossible.
+    // Real counters are small; anything huge is garbage.
+    constexpr uint32_t MAX_PLAUSIBLE_SYNCN = 0x0FFFFFFFu;
     if (parsed->device_num != active_device_num_.load() &&
-        parsed->syncn > max_syncn_seen_.load()) {
+        parsed->syncn > max_syncn_seen_.load() &&
+        parsed->syncn <= MAX_PLAUSIBLE_SYNCN) {
         max_syncn_seen_.store(parsed->syncn);
     }
     // Never process our own broadcast status (we may receive our own broadcast):
@@ -586,13 +652,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     // Stop asserting master and hand the tempo back — the box returns to being
     // a normal follower so a DJ can take control at any time.
     if (yielding_to_.load() == parsed->device_num && parsed->is_master()) {
-        yielding_to_.store(0);
-        master_confirmed_.store(false);
-        master_mode_.store(false);
-        release_deadline_ms_ = 0;
-        set_ignore_master(pre_master_ignore_);   // restore the pre-master source
-        master_request_countdown_ = 0;
-        restart_device_claim(idle_device_num_);  // give the player slot back
+        leave_master_mode_();
         log("yielded master back to the deck — following again");
     }
 
@@ -614,7 +674,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     // Tempo update — only when the BPM is trustworthy. Routed through the
     // EMA-smoothing helper so brief noise in successive status packets
     // doesn't kick the tick period directly.
-    if (parsed->bpm_valid() && parsed->effective_bpm() > 0.0f) {
+    if (parsed->bpm_valid() && bpm_is_sane(parsed->effective_bpm())) {
         apply_tempo_(parsed->effective_bpm());
     }
 
@@ -646,10 +706,10 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
 }
 
 void Bridge::restart_device_claim(uint8_t device_num, bool fast) {
+    if (device_num == 0) return;   // 0 is not a valid device number
     // Bridge-thread only. active_device_num_ is the single source of truth for
     // the number we are currently presenting on the link; cfg_.device_num stays
     // the configured idle number.
-    if (idle_device_num_ == 0) idle_device_num_ = active_device_num_.load();
     if (active_device_num_.load() == device_num) return;
     active_device_num_.store(device_num);
     claim_step_         = 0;
@@ -755,7 +815,7 @@ void Bridge::maybe_resync(uint64_t t) {
     // If they've gone stale (standalone, or the master paused), fall through
     // and restart now so the tap never feels dead.
     const bool beats_live =
-        (last_packet_ms_ != 0) && (t - last_packet_ms_ < 750);
+        (last_beat_ms_ != 0) && (t - last_beat_ms_ < 750);
     if (req == 1 && beats_live && !ignore_master_.load()) return;
 
     // Immediate (==2), or a deferred request with no live master beats.

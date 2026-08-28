@@ -132,12 +132,16 @@ uint32_t Clock::on_tick_() {
     midi_.send_byte(MIDI_CLOCK);
     ticks_emitted_.fetch_add(1, std::memory_order_relaxed);
 
-    // Bleed off a fraction of the phase error into the next interval.
-    int32_t err        = phase_error_us_.load();
-    int32_t correction = err / static_cast<int32_t>(gain_);
-    int32_t period     = static_cast<int32_t>(tick_period_us_.load());
-    int32_t next_us    = period + correction;
-    phase_error_us_.store(err - correction);
+    // Bleed off a fraction of the phase error into the next interval. Subtract
+    // rather than storing (err - correction): set_offset_us() and feed_beat()
+    // write this from other threads, and a load/store pair would silently
+    // discard an update that landed in between — the operator's offset nudge
+    // would simply not happen.
+    const int32_t err        = phase_error_us_.load();
+    const int32_t correction = err / static_cast<int32_t>(gain_);
+    const int32_t period     = static_cast<int32_t>(tick_period_us_.load());
+    int32_t next_us          = period + correction;
+    phase_error_us_.fetch_sub(correction);
 
     // Advance position.
     uint8_t t = tick_in_beat_.load();

@@ -480,6 +480,28 @@ and an XDJ-XZ. Behind `Bridge::set_master_mode()`:
    master, so the conflict never bites. Both are overridable per rig, and
    `BridgeConfig::device_num` defaults to 5 for the desktop build.
 
+## Treating the network as hostile
+
+Everything the bridge parses is broadcast on a shared link, and anything it
+re-broadcasts as tempo master is derived from that input. A few rules follow:
+
+- **Tempo is range-checked on ingest.** `effective_bpm()` is track BPM times
+  pitch, both raw uint fields, so the product spans roughly 1e-8 to 2.7e6 BPM.
+  `bpm_is_sane()` gates every path that stores or emits a tempo; the packet
+  builders refuse an out-of-range value rather than casting it out of range and
+  emitting a grid whose BPM field and timing predictions disagree.
+- **`Syncn` is bounded.** It only ever ratchets upward, so one packet claiming
+  `0xFFFFFFFF` would stick — and `max + 1` wrapping to zero would advertise the
+  lowest possible generation, silently making a takeover impossible forever.
+- **Command packets are validated like any other.** The handoff request and
+  acknowledgement are dispatched on their type byte, so they also check the
+  magic header, and the acknowledgement must come from the device we actually
+  asked. Otherwise any datagram whose eleventh byte happened to be `0x27` would
+  make the box assert master alongside the real one.
+- **We ignore our own broadcasts.** Both the beat and status receivers drop
+  packets bearing our own device number: broadcasts loop back to sockets bound
+  to the same port, and without the guard the bridge tracks itself as master.
+
 ## Master device tracking
 
 The master flag is in status-packet flags (bit 5). Track which device

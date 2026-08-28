@@ -536,6 +536,41 @@ void test_clock_offset_change_is_audible_quickly() {
     CHECK(after != before);
     CHECK(std::abs(after - before) >= 10000);
 }
+
+// ── Hardening against garbage off the network ──────────────────────────────
+//
+// Beat and status packets are attacker- or noise-controlled. Anything the
+// bridge re-broadcasts as tempo master must survive whatever arrives.
+
+void test_absurd_tempo_is_rejected() {
+    section("packets: a tempo outside the wire range is refused, not truncated");
+    uint8_t buf[320];
+    // bpm*100 must fit a uint16; 1310 BPM would wrap to ~655 while the timing
+    // fields were computed from the real value — a self-inconsistent grid.
+    CHECK_EQ(prolink::build_beat_packet(buf, sizeof buf, "x", 4, 1310.7f, 1), 0);
+    CHECK_EQ(prolink::build_beat_packet(buf, sizeof buf, "x", 4, 0.0001f, 1), 0);
+    CHECK_EQ(prolink::build_beat_packet(buf, sizeof buf, "x", 4, -5.0f, 1), 0);
+    CHECK_EQ(prolink::build_status_packet(buf, sizeof buf, "x", 4, 1310.7f, 1,
+                                          true, 1, 0xFF), 0);
+    // Real tempos still build.
+    CHECK(prolink::build_beat_packet(buf, sizeof buf, "x", 4, 174.0f, 1) == 0x60);
+    CHECK(prolink::bpm_is_sane(128.0f));
+    CHECK(!prolink::bpm_is_sane(1310.7f));
+}
+
+void test_parsers_reject_short_buffers_safely() {
+    section("packets: a bare magic header is rejected without reading past it");
+    // Exactly the magic and nothing else. parse_status_packet used to check
+    // the type byte at 0x0A before the length, reading one byte off the end.
+    uint8_t only_magic[10];
+    std::memcpy(only_magic, prolink::MAGIC, sizeof only_magic);
+    CHECK(!prolink::parse_status_packet(only_magic, sizeof only_magic).has_value());
+    CHECK(!prolink::parse_beat_packet(only_magic, sizeof only_magic).has_value());
+    CHECK(!prolink::parse_status_packet(only_magic, 0).has_value());
+    CHECK(prolink::has_prolink_magic(only_magic, sizeof only_magic));
+    only_magic[3] ^= 0xFF;
+    CHECK(!prolink::has_prolink_magic(only_magic, sizeof only_magic));
+}
 }  // namespace
 
 // Defined in test_bridge.cpp; returns its failure count.
@@ -565,6 +600,8 @@ int main() {
     test_clock_restart_clears_stale_phase();
     test_clock_tempo_bounds();
     test_clock_offset_change_is_audible_quickly();
+    test_absurd_tempo_is_rejected();
+    test_parsers_reject_short_buffers_safely();
 
     std::printf("\npackets/clock: %d checks, %d failure%s\n\n", g_checks, g_failures,
                 g_failures == 1 ? "" : "s");
