@@ -102,6 +102,11 @@ void Bridge::set_master_mode(bool on) {
         master_beat_in_bar_    = 0;
         last_master_status_ms_ = 0;
         master_confirmed_.store(false);
+        // Cancel any release still in flight. Without this, re-selecting master
+        // while a yield is pending leaves us advertising Mh (and armed with a
+        // release deadline), so we claim the role and immediately give it back.
+        yielding_to_.store(0);
+        release_deadline_ms_ = 0;
         // Take over at the tempo we were already following, so grabbing master
         // mid-set doesn't lurch the music. The DJ nudges from there.
         const float following = last_known_bpm_.load();
