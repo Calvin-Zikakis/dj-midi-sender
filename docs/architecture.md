@@ -437,13 +437,17 @@ order:
       past all peers.
 
    Steps 2-4 are exactly the dance captured in `docs/local/handoff-dance.txt`.
-   Implementation TODO: `build_master_handoff_request()` (`0x26`) and response
-   handling; **track the current master's source IP** (the recv path drops it
-   today) to unicast the request; then run the assertion dance already built.
-   Exact byte offsets for `D` to be confirmed against a reference impl
-   (prolink-connect / python-prodj-link). **Testable on an ordinary switch — no
-   hub/mirror needed**, since the box sends the request and reads the broadcast
-   status result.
+
+   **Implemented** (untested on hardware): `build_master_handoff_request()`
+   emits the `0x26` packet; `IUdpSocket::recv` now returns the sender's source
+   IP so the bridge tracks the current master's IP (`master_ip_`); on
+   `set_master_mode(true)` it unicasts a burst of `0x26` requests to the master
+   on port 50001, then asserts `mm=1` + `Syncn=max+1` and broadcasts its grid.
+   **Testable on an ordinary switch — no hub/mirror needed**, since the box
+   sends the request and reads the broadcast status result. Open items to
+   confirm live: the exact byte offset of `D` in the `0x26` payload, whether we
+   should wait for the `0x27`/`Mh` acknowledgement before asserting `mm=1`, and
+   the device number to claim.
 
 5. **Front-panel Master mode** — a toggle that makes the box the tempo
    authority, using the existing free-run / manual-BPM tempo as its grid.

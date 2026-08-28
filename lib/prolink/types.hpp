@@ -14,6 +14,11 @@ inline constexpr uint8_t PKT_TYPE_SYNC_CONTROL = 0x2A;  // sync/master command
 // Sync-control command byte (payload offset 0x0c): become tempo master.
 inline constexpr uint8_t SYNC_CMD_BECOME_MASTER = 0x01;
 
+// Tempo-master handoff (Deep Symmetry sync.adoc). The taker unicasts a REQUEST
+// to the current master on port 50001; the master replies with a RESPONSE.
+inline constexpr uint8_t PKT_TYPE_MASTER_HANDOFF_REQ  = 0x26;
+inline constexpr uint8_t PKT_TYPE_MASTER_HANDOFF_RESP = 0x27;
+
 inline constexpr uint16_t PORT_KEEPALIVE = 50000;
 inline constexpr uint16_t PORT_BEAT      = 50001;
 inline constexpr uint16_t PORT_STATUS    = 50002;

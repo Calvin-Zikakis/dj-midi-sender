@@ -62,7 +62,8 @@ bool UdpPosix::enable_broadcast() {
     return true;
 }
 
-int UdpPosix::recv(uint8_t* buf, size_t len, uint32_t timeout_ms) {
+int UdpPosix::recv(uint8_t* buf, size_t len, uint32_t timeout_ms,
+                   uint32_t* src_ip) {
     if (fd_ < 0) return -1;
 
     timeval tv{};
@@ -78,6 +79,7 @@ int UdpPosix::recv(uint8_t* buf, size_t len, uint32_t timeout_ms) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return 0;
         return -1;
     }
+    if (src_ip) *src_ip = ntohl(from.sin_addr.s_addr);  // host-order out
     return static_cast<int>(n);
 }
 

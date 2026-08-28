@@ -26,7 +26,8 @@ public:
     // go out instead of being dropped.
     bool enable_broadcast();
 
-    int  recv(uint8_t* buf, size_t len, uint32_t timeout_ms) override;
+    int  recv(uint8_t* buf, size_t len, uint32_t timeout_ms,
+              uint32_t* src_ip = nullptr) override;
     bool send(const uint8_t* buf, size_t len,
               uint32_t ip, uint16_t port) override;
 
