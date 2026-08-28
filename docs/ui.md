@@ -14,22 +14,29 @@ debouncing in [`ui_input.cpp`](../firmware/src/ui_input.cpp), rendering in
 behaves differently depending on whether the box is *following* something or
 *owns* the tempo itself:
 
-| Source | Meaning | Who owns the tempo |
-|---|---|---|
-| `auto` | follow whichever deck holds the DJ-Link master role | the deck |
-| `P1`-`P4` | pin to that deck | the deck |
-| `mstr` | the box claims the DJ-Link tempo-master role; decks follow it | **the box** |
-| `off` | standalone, link ignored | **the box** |
+| Source | Short | Meaning | Who owns the tempo |
+|---|---|---|---|
+| follower master | `folw` | follow whichever deck holds the DJ-Link master role | the deck |
+| player 1-4 | `P1`-`P4` | pin to that deck | the deck |
+| sync master | `sync` | the box claims the DJ-Link master role; decks sync to it | **the box** |
+| off (standalone) | `off` | link ignored | **the box** |
 
-`mstr` and `off` are the *tempo-owner* sources. Wherever the tables below say
-"tempo-owner", they behave identically.
+**`sync master` is hidden unless "Act as player" is enabled** in the settings
+menu. Claiming the master role means claiming a player slot on the link, which
+is exactly what that setting authorises — and it means a stray encoder spin can
+never hijack the master role mid-set. With it off, the source list has six
+entries and the box stays a quiet follower.
+
+The select list spells the names out; the status line uses the short forms.
+`sync master` and `off` are the *tempo-owner* sources — wherever the tables
+below say "tempo-owner", they behave identically.
 
 ## Modes
 
 ```
                  push encoder
       Normal  ─────────────────▶  Source-select
-        ▲  │                          │  push = confirm, tap = cancel, 5 s idle
+        ▲  │                          │  push = confirm, tap = cancel, 10 s idle
         │  │  hold both nudges 1 s    │
         │  └──────────────▶ Menu ◀────┘
         │                    │  push = edit an item
@@ -41,36 +48,31 @@ behaves differently depending on whether the box is *following* something or
 
 ## Normal screen
 
-| Control | Follower sources (`auto`, `P1`-`P4`) | Tempo-owner sources (`mstr`, `off`) |
+| Control | Follower sources (`folw`, `P1`-`P4`) | Tempo-owner sources (`sync`, `off`) |
 |---|---|---|
-| **Spin** | nothing on its own | **fine-tune BPM** by *Fine step* |
-| **Hold tap + spin** | trim BPM by *BPM step* (Free mode only) | (spin already adjusts BPM) |
-| **Tap** (short) | **re-sync**: re-emit MIDI Start to realign a slave that lost bar alignment. Sync = on the master's next downbeat, Free = immediately. Flashes `RSYN` | **tap-tempo**: averages the last 8 taps (250-2000 ms apart; a longer gap starts a new series) |
+| **Spin** | nothing | **adjust BPM** by *BPM step* |
+| **Tap** (short) | **re-sync**: re-emit MIDI Start on the master's next downbeat, realigning a slave that lost bar alignment. Flashes `RSYN` | **tap-tempo**: averages the last 8 taps (250-2000 ms apart; a longer gap starts a new series) |
 | **Nudge -/+** | trim the clock offset by *Offset step*; hold to auto-repeat with acceleration. Persists to NVS ~2 s after it stops changing | same |
 | **Hold both nudges ~1 s** | open the Settings menu | same |
-| **Push encoder** | open Source-select (blocked while tap is held, since that is the BPM modifier) | same |
+| **Push encoder** | open Source-select | same |
 
 ### Status line
 
 ```
  128.0      BPM        <- big: current clock tempo
             +0.0%      <- pitch % from the master deck
- o o o o   PLAY  SYNC  <- bar position, transport, mode tag
- src auto   mst 3      <- selected source / who holds DJ-Link master
+ o o o o   PLAY        <- bar position, transport, [tag]
+ src folw   mst 3      <- selected source / who holds DJ-Link master
  off +30.0ms   L rdy   <- clock offset / link + USB state
 ```
 
-Mode tag, in priority order:
+The tag slot shows only what `src` does not already tell you:
 
 | Tag | Meaning |
 |---|---|
 | `RSYN` | brief confirmation that a re-sync was requested |
-| `MSTR` | the box holds the DJ-Link tempo-master role |
 | `REQ` | master requested, handshake in flight |
-| `OFF` | standalone |
-| `MAN` | Free mode with a manually latched tempo |
-| `FREE` | Free mode, following |
-| `SYNC` | following a deck |
+| (blank) | nothing to report |
 
 `mst` shows the device number currently holding DJ-Link master, or `us` when
 that is the box.
@@ -78,26 +80,25 @@ that is the box.
 ## Source-select
 
 Spin moves a `>` cursor; the active source keeps its `(on)` marker until you
-confirm. **Push** confirms, **tap** cancels, 5 s of inactivity cancels.
+confirm. **Push** confirms, **tap** cancels, 10 s of inactivity cancels.
 
-Selecting `mstr` runs the tempo-master takeover; selecting anything else while
-the box is master releases the role gracefully (it appoints a deck first, so
-the link is never left without a master). See
-[architecture.md](architecture.md) for the protocol.
+Selecting `sync master` runs the tempo-master takeover; selecting anything else
+while the box is master releases the role gracefully (it appoints a deck first,
+so the link is never left without a master) and restores whatever the box was
+doing before. See [architecture.md](architecture.md) for the protocol.
 
 If a deck reclaims master from the box, the bridge steps down on its own and
-the panel falls back to `auto`.
+the panel falls back to `follower master`.
 
 ## Settings menu
 
-Spin to scroll, push to edit, spin to change, push to save, tap to back. All
+Spin to scroll, push to edit, spin to change, push to save, tap to back. Both
 values persist to NVS.
 
 | Item | Values | What it governs |
 |---|---|---|
-| **Mode** | Sync / Free | Whether the clock keeps running when the followed deck stops. **Only affects follower sources** — `mstr` and `off` own the tempo and always keep clocking |
-| **BPM step** | 0.1 / 0.5 / 1 / 5 | BPM per detent for **hold-tap + spin** (follower sources, Free mode) |
-| **Fine step** | 0.1 / 0.25 / 0.5 / 1 | BPM per detent for **plain spin** when the box owns the tempo (`mstr` / `off`) |
+| **Act as player** | yes / no | Whether the box may take a player slot on the link. Unlocks `sync master` in the source list. Turning it off while the box is master releases the role first |
+| **BPM step** | 0.1 / 0.25 / 0.5 / 1 | BPM per encoder detent when the box owns the tempo (`sync` / `off`) |
 | **Offset step** | 0.1 / 0.5 / 1 ms | Clock-offset change per nudge press |
 
 ## Deliberate design decisions
@@ -109,20 +110,22 @@ values persist to NVS.
 - **A tap used as back/cancel is consumed.** Otherwise its release lands in
   Normal and fires a re-sync — a real Stop+Start on the slave just for backing
   out of a menu.
-- **Encoder push is blocked while tap is held** so the hold-tap + spin BPM
-  modifier cannot accidentally open Source-select.
-- **Two BPM steps exist on purpose.** Coarse (*BPM step*) is for nudging a
-  latched tempo while free-running; fine (*Fine step*) is for dialing in a
-  tempo the box owns. They are separate menu items because a comfortable
-  free-run nudge is usually coarser than a master-tempo trim.
+- **The source list is the only mode selector.** There is no separate
+  Sync/Free setting: "keep clocking independently" is what `sync master` and
+  `off` are for. One list answers "what drives the tempo", and nothing else
+  competes with it.
+- **One BPM step, not two.** The step only ever applies where the box owns the
+  tempo, so a single setting covers it.
 - **Nudge auto-repeat accelerates** rather than using a fixed rate, so both a
   single 1 ms trim and a long sweep are practical from the same button.
+- **Taking master is opt-in, not one spin away.** "Act as player" gates it, so
+  the destructive option is absent from the list until you have said you want
+  the box on the link as a player.
 
-## Known rough edges
+## History
 
-- **Mode (Sync/Free) is dead in `mstr` and `off`.** The menu still shows and
-  saves it; it simply has no effect while the box owns the tempo.
-- **`src mstr` and the `MSTR` tag are redundant** — two places on the status
-  screen saying the same thing.
-- **Source-select has a 5 s idle timeout** which is tight now that the list has
-  seven entries.
+Earlier revisions had a **Mode (Sync/Free)** menu item and a second BPM-step
+setting for a hold-tap + spin gesture that only worked in Free mode. Both were
+removed once `sync master` and `off` covered the same ground from the source
+list. `Bridge::set_free_run()` still exists in the core for the desktop build;
+the firmware simply never enables it.

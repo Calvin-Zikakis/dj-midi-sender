@@ -35,13 +35,19 @@ design, and [docs/hardware.md](docs/hardware.md) for the board and wiring.
   bar-slip realignment gated behind a confidence counter so a single dropped
   beat packet cannot cause a false stop.
 
-## Next
+- **ESP32 as tempo master.** The box claims the Pro DJ Link tempo-master role
+  so CDJs sync *to* it: it emits its own beat and status packets, performs the
+  documented handoff (request `0x26`, the master's `0x27` acknowledgement, then
+  the `Mm`/`Mh`/`Syncn` dance), and always yields the role back when a DJ asks
+  for it from a deck. Verified live against an XDJ-XZ and an XDJ-700. Selected
+  from the front panel as the `sync master` source, gated behind an "Act as
+  player" setting.
+- **Unit tests and CI.** A dependency-free suite covers the reverse-engineered
+  wire formats and the bridge state machine; GitHub Actions runs it on
+  gcc/clang/macOS, under ASan/TSan/UBSan, and builds the desktop and firmware
+  targets.
 
-- **ESP32 as tempo master.** The large one: broadcast beat packets with the
-  box's own grid and claim the Pro DJ Link tempo-master role so CDJs sync *to*
-  the box. Free-run and manual BPM (already built) are the prerequisites. This
-  is real protocol reverse-engineering work — the box currently sends only a
-  virtual-CDJ keep-alive, just enough to unlock status packets.
+## Next
 
 ## Later / maybe
 
