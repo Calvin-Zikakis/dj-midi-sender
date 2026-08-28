@@ -123,6 +123,24 @@ void Bridge::on_master_beat() {
     if (n) beat_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_BEAT);
 }
 
+void Bridge::handle_master_yield_request(uint8_t requester, uint32_t requester_ip) {
+    if (requester == 0 || requester == cfg_.device_num) return;
+    if (yielding_to_.load() == requester) return;   // already yielding to it
+
+    // Acknowledge (0x27) unicast on the STATUS port, and start advertising the
+    // requester in our Mh. We step down once it asserts master (see
+    // handle_status_packet), completing the documented handoff dance.
+    yielding_to_.store(requester);
+    uint8_t ack[64];
+    size_t an = build_master_handoff_response(ack, sizeof(ack),
+                                              cfg_.device_name, cfg_.device_num);
+    bool ok = an && status_sock_.send(ack, an, requester_ip, PORT_STATUS);
+    char m[96];
+    std::snprintf(m, sizeof(m), "yield request from device %u — ACK 0x27 %s",
+                  requester, ok ? "sent" : "FAILED");
+    log(m);
+}
+
 void Bridge::maybe_broadcast_master_status(uint64_t t) {
     if (!master_mode_.load()) return;
     if (t - last_master_status_ms_ < 200) return;   // ~5 Hz, like real players
@@ -159,10 +177,11 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
     // Only claim master (mm=1) once the current master has yielded; until then
     // we broadcast as a normal synced follower and keep sending 0x26 requests.
     const bool assert_master = master_confirmed_.load();
+    const uint8_t mh = yielding_to_.load() ? yielding_to_.load() : 0xFF;
     uint8_t pkt[320];
     size_t n = build_status_packet(pkt, sizeof(pkt), cfg_.device_name,
                                    cfg_.device_num, bpm, beat, assert_master,
-                                   syncn);
+                                   syncn, mh);
     if (n) status_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_STATUS);
 }
 
@@ -203,9 +222,16 @@ void Bridge::run() {
 
     while (running_.load()) {
         // Round-robin both listener sockets with short timeouts.
-        int n = beat_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS);
+        uint32_t beat_src = 0;
+        int n = beat_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS, &beat_src);
         if (n > 0) {
             if (cb_.on_raw_datagram) cb_.on_raw_datagram(PORT_BEAT, buf, static_cast<size_t>(n));
+            // A deck asking US to yield the master role (0x26). Always honor it
+            // so a DJ can reclaim master from the box at any time.
+            if (n > 0x21 && buf[0x0A] == PKT_TYPE_MASTER_HANDOFF_REQ &&
+                master_mode_.load() && master_confirmed_.load()) {
+                handle_master_yield_request(buf[0x1F + 2], beat_src);
+            }
             handle_beat_packet(buf, static_cast<size_t>(n));
         }
 
@@ -453,6 +479,18 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
 
     if (parsed->device_num != current_master_.load()) return;
     master_ip_.store(last_status_src_ip_);  // remember the master's IP for a handoff request
+
+    // Step down: we are yielding to this device and it has now claimed master.
+    // Stop asserting master and hand the tempo back — the box returns to being
+    // a normal follower so a DJ can take control at any time.
+    if (yielding_to_.load() == parsed->device_num && parsed->is_master()) {
+        yielding_to_.store(0);
+        master_confirmed_.store(false);
+        master_mode_.store(false);
+        set_ignore_master(false);           // follow the deck's tempo again
+        master_request_countdown_ = 0;
+        log("yielded master back to the deck — following again");
+    }
 
     // Handoff acknowledgement: the current master sets its Mh to our device
     // number when it yields to us. Only then may we assert mm=1.
