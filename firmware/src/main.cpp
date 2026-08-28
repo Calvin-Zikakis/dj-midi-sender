@@ -620,6 +620,10 @@ void ui_task(void*) {
     bool keep_playing       = nvs_load_i32(kNvsKeyKeepPlaying, 0) != 0;
     // One auto-claim per stop episode — see the latch below.
     bool auto_master_armed  = true;
+    // Source that was selected before an auto-claim took the master role, so
+    // handing the role back restores what the operator actually chose. 0xFF
+    // means "the current master selection is the operator's, not ours".
+    uint8_t src_before_auto_master = 0xFF;
     uint8_t bpm_step_idx    = static_cast<uint8_t>(clamp_idx(
         nvs_load_i32(kNvsKeyBpmStep, firmware::kBpmStepDefault), firmware::kBpmStepCount));
     uint8_t offset_step_idx = static_cast<uint8_t>(clamp_idx(
@@ -673,13 +677,16 @@ void ui_task(void*) {
         // master while the decks are still stopped would drop us back to
         // follower master, we would see "holding" again and immediately grab
         // it back — the box and the DJ fighting over the role. Re-arm only
-        // once a deck is genuinely driving us again.
-        if (b && !b->holding() && !b->master_mode() && b->is_playing()) {
+        // once a deck is genuinely driving the clock again: is_playing() is
+        // OUR clock, which stays true right through a hold and so cannot
+        // answer that question.
+        if (b && b->master_deck_playing()) {
             auto_master_armed = true;
         }
         if (b && keep_playing && act_as_player && auto_master_armed &&
             b->holding() && g_selected_src.load() != firmware::kSourceMaster) {
             auto_master_armed = false;
+            src_before_auto_master = g_selected_src.load();
             g_selected_src.store(firmware::kSourceMaster);
         }
         const bool tap_held = firmware::ui_input_tap_held();
@@ -795,6 +802,9 @@ void ui_task(void*) {
                     proposed_src = 0;
                 }
                 const uint8_t previous = g_selected_src.load();
+                // A deliberate choice supersedes any auto-claim, so there is
+                // nothing left to restore.
+                src_before_auto_master = 0xFF;
                 g_selected_src.store(proposed_src);
                 // Re-confirming the *same* source is a no-op. Re-running it for
                 // `sync master` would drop mm=1 and renegotiate the whole
@@ -853,6 +863,7 @@ void ui_task(void*) {
                     // selection would survive to be applied later.
                     if (!act_as_player &&
                         g_selected_src.load() == firmware::kSourceMaster) {
+                        src_before_auto_master = 0xFF;
                         g_selected_src.store(0);
                         ui_apply_source(b, 0);
                         last_applied_src = 0;
@@ -902,9 +913,16 @@ void ui_task(void*) {
         // apply it: the bridge may still be pinned to a deck or standalone from
         // whatever was selected before master mode.
         if (b && g_selected_src.load() == firmware::kSourceMaster && !b->master_mode()) {
-            g_selected_src.store(0);
-            ui_apply_source(b, 0);
-            last_applied_src = 0;
+            // If WE took the role because the decks stopped, give back the
+            // source the operator had chosen — dropping a deliberate `player N`
+            // pin on the floor because the box borrowed master for a track
+            // change is a surprise they never asked for.
+            const uint8_t back = (src_before_auto_master == 0xFF)
+                                     ? 0 : src_before_auto_master;
+            src_before_auto_master = 0xFF;
+            g_selected_src.store(back);
+            ui_apply_source(b, back);
+            last_applied_src = back;
         }
 
         // The bridge does not exist until Ethernet is up, so a source chosen

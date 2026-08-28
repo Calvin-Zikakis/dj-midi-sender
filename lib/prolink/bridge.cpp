@@ -700,6 +700,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     if (last_master_playing_ != pending_play_state_ &&
         (t - pending_play_change_ms_) >= cfg_.play_debounce_ms) {
         last_master_playing_ = pending_play_state_;
+        master_deck_playing_.store(last_master_playing_);
         if (last_master_playing_) {
             holding_.store(false);   // a deck is driving us again
         } else if (playing_.load() &&
@@ -711,8 +712,14 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
             if (!holding_.exchange(true) && cfg_.verbose) {
                 log("hold (decks stopped, keep playing)");
             }
-        } else if (!last_master_playing_ && playing_.load() &&
-            !free_run_.load() && !ignore_master_.load()) {
+            // The deck's grid moves on (or restarts) while we hold, so what we
+            // expect next is unknowable. Clearing it costs one bar of slip
+            // detection on resume and saves a spurious count against a
+            // threshold that only has to shrink once to start realigning on it.
+            expected_beat_in_bar_ = 0;
+            bar_slip_count_       = 0;
+        } else if (playing_.load() &&
+                   !free_run_.load() && !ignore_master_.load()) {
             // Playing → stopped: kill the clock immediately. (Skipped in
             // free-run / ignore: the clock keeps going on its latched tempo.)
             playing_.store(false);
@@ -840,6 +847,7 @@ void Bridge::maybe_stop_on_silence(uint64_t t) {
     playing_.store(false);
     waiting_for_downbeat_ = false;
     last_master_playing_ = false;
+    master_deck_playing_.store(false);
     pending_play_state_  = false;
     expected_beat_in_bar_ = 0;
     bar_slip_pending_realign_ = false;
