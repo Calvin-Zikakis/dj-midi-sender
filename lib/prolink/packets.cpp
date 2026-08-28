@@ -295,4 +295,34 @@ size_t build_sync_control_packet(uint8_t* out, size_t out_len,
     return PKT_LEN;
 }
 
+size_t build_master_handoff_request(uint8_t* out, size_t out_len,
+                                    const char* device_name,
+                                    uint8_t device_num) {
+    constexpr size_t HDR_LEN = 0x1F;                 // magic + type + 20B name
+    constexpr size_t PAYLOAD_LEN = 10;
+    constexpr size_t PKT_LEN = HDR_LEN + PAYLOAD_LEN;  // 0x29 = 41 bytes
+    if (out_len < PKT_LEN) return 0;
+
+    std::memset(out, 0, PKT_LEN);
+    std::memcpy(out, MAGIC, sizeof(MAGIC));  // 0x00..0x09
+    out[0x0A] = PKT_TYPE_MASTER_HANDOFF_REQ;  // 0x26
+    for (size_t i = 0; i < 20; ++i) {
+        if (!device_name || device_name[i] == '\0') break;
+        out[0x0B + i] = static_cast<uint8_t>(device_name[i]);
+    }
+    // Payload at 0x1F: 01 20 00 <dev> <len_r:2=0004> 00 00 00 <dev>
+    uint8_t* p = out + HDR_LEN;
+    p[0x00] = 0x01;
+    p[0x01] = 0x20;
+    p[0x02] = 0x00;
+    p[0x03] = device_num;
+    p[0x04] = 0x00;   // len_r hi
+    p[0x05] = 0x04;   // len_r lo (4 bytes follow)
+    p[0x06] = 0x00;
+    p[0x07] = 0x00;
+    p[0x08] = 0x00;
+    p[0x09] = device_num;
+    return PKT_LEN;
+}
+
 }  // namespace prolink

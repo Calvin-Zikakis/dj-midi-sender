@@ -129,15 +129,20 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
     const float bpm = last_known_bpm_.load();
     if (!(bpm > 0.0f)) return;
 
-    // Takeover request burst: ask the current master to yield to us. beat-link
-    // unicasts this to the master; we broadcast it (also reaches the master)
-    // to avoid tracking its source IP for now.
+    // Takeover request burst: unicast a MASTER_HANDOFF_REQUEST (0x26) to the
+    // current master on port 50001, asking it to yield to us (it replies 0x27
+    // and sets its Mh to our device number). Needs the master's IP, learned
+    // from its status packets; if we don't have it yet, keep the countdown
+    // alive and try again next cycle.
     if (master_request_countdown_ > 0) {
-        --master_request_countdown_;
-        uint8_t req[64];
-        size_t rn = build_sync_control_packet(req, sizeof(req), cfg_.device_name,
-                                              cfg_.device_num, SYNC_CMD_BECOME_MASTER);
-        if (rn) beat_sock_.send(req, rn, cfg_.broadcast_ip, PORT_BEAT);
+        const uint32_t mip = master_ip_.load();
+        if (mip != 0) {
+            --master_request_countdown_;
+            uint8_t req[64];
+            size_t rn = build_master_handoff_request(req, sizeof(req),
+                                                     cfg_.device_name, cfg_.device_num);
+            if (rn) beat_sock_.send(req, rn, mip, PORT_BEAT);
+        }
     }
     const uint8_t  beat  = master_beat_in_bar_ ? master_beat_in_bar_ : 1;
     const uint32_t syncn = max_syncn_seen_.load() + 1;   // outrank the peers
@@ -191,8 +196,10 @@ void Bridge::run() {
             handle_beat_packet(buf, static_cast<size_t>(n));
         }
 
-        n = status_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS);
+        uint32_t status_src = 0;
+        n = status_sock_.recv(buf, sizeof(buf), RECV_TIMEOUT_MS, &status_src);
         if (n > 0) {
+            last_status_src_ip_ = status_src;
             if (cb_.on_raw_datagram) cb_.on_raw_datagram(PORT_STATUS, buf, static_cast<size_t>(n));
             handle_status_packet(buf, static_cast<size_t>(n));
         }
@@ -375,6 +382,9 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
         parsed->syncn > max_syncn_seen_.load()) {
         max_syncn_seen_.store(parsed->syncn);
     }
+    // Never process our own broadcast status (we may receive our own broadcast):
+    // it must not make us track ourselves as master or as the handoff target.
+    if (parsed->device_num == cfg_.device_num) return;
     uint64_t t = now_ms();
     last_packet_ms_ = t;
     last_status_ms_ = t;
@@ -422,6 +432,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     }
 
     if (parsed->device_num != current_master_.load()) return;
+    master_ip_.store(last_status_src_ip_);  // remember the master's IP for a handoff request
 
     // Master-filtered. Fire callback so the GUI only sees the active deck.
     // The XDJ-XZ broadcasts status for both internal decks; without this

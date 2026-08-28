@@ -13,8 +13,11 @@ namespace prolink {
 class IUdpSocket {
 public:
     // Blocking recv with timeout in milliseconds. Returns bytes read, 0 on
-    // timeout, or -1 on socket error.
-    virtual int recv(uint8_t* buf, size_t len, uint32_t timeout_ms) = 0;
+    // timeout, or -1 on socket error. If `src_ip` is non-null, the sender's
+    // IPv4 address (host byte order) is written to it — used to unicast the
+    // tempo-master handoff request back to the current master.
+    virtual int recv(uint8_t* buf, size_t len, uint32_t timeout_ms,
+                     uint32_t* src_ip = nullptr) = 0;
 
     // Send `buf` to (ip, port). Returns true on success. ip is the IPv4
     // address as a host-order uint32_t (e.g. 192.168.1.1 == 0xC0A80101 on
@@ -203,6 +206,8 @@ private:
     uint64_t              last_master_status_ms_ = 0;
     std::atomic<uint32_t> max_syncn_seen_{0};        // highest Syncn from peers
     int                   master_request_countdown_ = 0;  // takeover requests left to send
+    std::atomic<uint32_t> master_ip_{0};             // current master's source IP (host order)
+    uint32_t              last_status_src_ip_ = 0;   // src IP of the status packet in flight
     std::atomic<uint8_t>  current_master_{0};
     std::atomic<float>    last_known_bpm_{120.0f};
     std::atomic<float>    clock_offset_ms_{0.0f};
