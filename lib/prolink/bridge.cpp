@@ -107,6 +107,8 @@ void Bridge::set_master_mode(bool on) {
         // release deadline), so we claim the role and immediately give it back.
         yielding_to_.store(0);
         release_deadline_ms_ = 0;
+        // Claim a player slot for the duration — only those can hold master.
+        restart_device_claim(cfg_.master_device_num);
         // Take over at the tempo we were already following, so grabbing master
         // mid-set doesn't lurch the music. The DJ nudges from there.
         const float following = last_known_bpm_.load();
@@ -144,6 +146,7 @@ void Bridge::set_master_mode(bool on) {
         master_confirmed_.store(false);
         yielding_to_.store(0);
         release_deadline_ms_ = 0;
+        restart_device_claim(idle_device_num_);
     }
     master_request_countdown_ = 0;
 }
@@ -188,6 +191,7 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
         master_confirmed_.store(false);
         master_mode_.store(false);
         set_ignore_master(false);
+        restart_device_claim(idle_device_num_);
         log("release timed out — dropping master anyway");
         return;
     }
@@ -200,7 +204,7 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
     // current master on port 50001, asking it to yield to us (it replies 0x27
     // and sets its Mh to our device number). Keep asking until it yields
     // (master_confirmed_); needs the master's IP, learned from its status.
-    if (!master_confirmed_.load() && master_request_countdown_ > 0) {
+    if (claim_done_ && !master_confirmed_.load() && master_request_countdown_ > 0) {
         const uint32_t mip = master_ip_.load();
         if (mip != 0) {
             --master_request_countdown_;
@@ -539,6 +543,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
         release_deadline_ms_ = 0;
         set_ignore_master(false);           // follow the deck's tempo again
         master_request_countdown_ = 0;
+        restart_device_claim(idle_device_num_);  // give the player slot back
         log("yielded master back to the deck — following again");
     }
 
@@ -589,6 +594,18 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
         // Stopped → playing transitions are handled by the next beat packet
         // (we hold Start until beat_in_bar == 1).
     }
+}
+
+void Bridge::restart_device_claim(uint8_t device_num) {
+    if (idle_device_num_ == 0) idle_device_num_ = cfg_.device_num;  // remember home
+    if (cfg_.device_num == device_num) return;
+    cfg_.device_num = device_num;
+    claim_step_     = 0;
+    last_claim_ms_  = 0;
+    claim_done_     = false;
+    char m[80];
+    std::snprintf(m, sizeof(m), "re-claiming as device %u", device_num);
+    log(m);
 }
 
 void Bridge::step_device_claim(uint64_t t) {

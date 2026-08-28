@@ -355,19 +355,25 @@ void bridge_task(void*) {
     prolink::Clock clock(g_midi_out, timer, /* gain_divisor */ 16);
 
     prolink::BridgeConfig cfg;
-    // Our device number on the link, used for the vCDJ announce and (in master
-    // mode) the beat/status packets we broadcast.
-    //
-    // NOT 1-4: those are deck slots, and a 4-channel unit like the XDJ-XZ owns
-    // all four. Squatting on one (we tried 4) breaks that mixer's own master
-    // arbitration — it stops letting you pass master between its decks. 5-6 are
-    // the mixer slots, and the protocol allows a mixer to hold tempo master, so
-    // 5 works both as a quiet follower and as a master claimant.
-    // Override with -DDEVICE_NUM=n when experimenting.
+    // Two device numbers, because the constraints conflict (both verified live
+    // against an XDJ-XZ + XDJ-700):
+    //   - Only PLAYER slots (1-4) can hold tempo master. On mixer slots (5/6)
+    //     the current master offers the handoff (sets its Mh to us) but never
+    //     completes it.
+    //   - But a 4-channel unit like the XDJ-XZ treats all four player slots as
+    //     its own. Sitting on one permanently breaks its deck-to-deck master
+    //     handoff — even with a proper claim handshake.
+    // So idle on a harmless number and only claim a player slot for as long as
+    // we are actually master (you don't need deck-to-deck handoff while the box
+    // is the master anyway). Overridable for other rigs.
     #ifndef DEVICE_NUM
-    #define DEVICE_NUM 5
+    #define DEVICE_NUM 7          // idle: out of every player/mixer slot
     #endif
-    cfg.device_num = DEVICE_NUM;
+    #ifndef MASTER_DEVICE_NUM
+    #define MASTER_DEVICE_NUM 4   // claimed only while acting as tempo master
+    #endif
+    cfg.device_num        = DEVICE_NUM;
+    cfg.master_device_num = MASTER_DEVICE_NUM;
     std::strncpy(cfg.device_name, "xdj-bridge", sizeof(cfg.device_name) - 1);
     std::memcpy(cfg.mac, g_mac, 6);
     cfg.local_ip            = kLocalIpHost;

@@ -47,6 +47,15 @@ struct BridgeConfig {
     // packet otherwise).
     uint8_t  force_master_device = 0;
 
+    // Device number claimed only while acting as tempo master. Only player
+    // slots (1..4) can hold the master role — mixer slots get the handoff
+    // offered but never completed. But a 4-channel unit like the XDJ-XZ treats
+    // all four player slots as its own: sitting on one permanently breaks its
+    // deck-to-deck master handoff. So the box lives on `device_num` (a harmless
+    // out-of-the-way number) and only claims this player slot for as long as it
+    // is actually master, re-running the claim handshake on each switch.
+    uint8_t  master_device_num = 4;
+
     // EMA smoothing coefficient applied to incoming BPM values before
     // pushing to the clock. 0 < alpha <= 1, where 1 = no smoothing (each
     // update applied directly), smaller = heavier smoothing. 0.3 means
@@ -248,6 +257,9 @@ private:
     uint8_t  claim_step_ = 0;
     uint64_t last_claim_ms_ = 0;
     bool     claim_done_ = false;
+    uint8_t  idle_device_num_ = 0;   // number to return to when not master
+    // Re-run the claim handshake for a new device number.
+    void restart_device_claim(uint8_t device_num);
     float    smoothed_bpm_ = 0.0f;      // EMA-filtered tempo (0 = bootstrap)
 
     // Bar-alignment tracking. If a beat packet is dropped, the master's
