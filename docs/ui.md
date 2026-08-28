@@ -35,15 +35,17 @@ below say "tempo-owner", they behave identically.
 
 ```
                  push encoder
-      Normal  ─────────────────▶  Source-select
-        ▲  │                          │  push = confirm, tap = cancel, 10 s idle
-        │  │  hold both nudges 1 s    │
-        │  └──────────────▶ Menu ◀────┘
-        │                    │  push = edit an item
-        └────────────────────┤  tap  = back, 12 s idle
-                             ▼
-                         Menu-edit
-                      push = save, tap = cancel
+      Normal  ──push encoder──▶  Source-select
+        ▲                            │  push = confirm
+        │◀───────────────────────────┘  tap = cancel, 10 s idle
+        │
+        │  hold both nudges 1 s
+        ▼
+       Menu  ──push──▶  Menu-edit
+        │                  │  push = save, tap = cancel
+        │◀─────────────────┘
+        │
+        └──▶ Normal   (tap = back, or 12 s idle; Menu-edit idles out too)
 ```
 
 ## Normal screen
@@ -92,8 +94,8 @@ the panel falls back to `follower master`.
 
 ## Settings menu
 
-Spin to scroll, push to edit, spin to change, push to save, tap to back. Both
-values persist to NVS.
+Spin to scroll, push to edit, spin to change, push to save, tap to back. All
+three settings persist to NVS.
 
 | Item | Values | What it governs |
 |---|---|---|
@@ -133,5 +135,5 @@ values persist to NVS.
 Earlier revisions had a **Mode (Sync/Free)** menu item and a second BPM-step
 setting for a hold-tap + spin gesture that only worked in Free mode. Both were
 removed once `sync master` and `off` covered the same ground from the source
-list. `Bridge::set_free_run()` still exists in the core for the desktop build;
-the firmware simply never enables it.
+list. `Bridge::set_free_run()` still exists in the core but nothing calls it —
+it is unused API kept for the moment rather than a desktop-only feature.

@@ -16,6 +16,13 @@ Doc map — what to touch for what (all public/tracked):
 | [docs/architecture.md](docs/architecture.md) | protocol, packet offsets, or clock/PLL design changes |
 | [docs/hardware.md](docs/hardware.md) | board, pin map, wiring, resistor values, hardware gotchas |
 | [docs/ui.md](docs/ui.md) | front-panel controls: gestures, modes, menu items |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | build/test workflow, threading rules for `lib/prolink/` |
+
+**Tests move with the code too.** `tests/` covers the reverse-engineered wire
+formats and the bridge state machine; run `cmake --build build --target
+xdj_tests && ./build/tests/xdj_tests` before committing a change to
+`lib/prolink/`, and the ThreadSanitizer build if you touched anything shared
+between the UI thread and the run loop.
 
 `docs/local/` holds personal working notes (session log, historical handoff/
 context docs) and is **gitignored** — keep it as a private scratchpad if you
