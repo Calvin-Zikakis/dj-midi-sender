@@ -347,6 +347,195 @@ void test_clock_offset_is_tempo_independent() {
     CHECK_EQ(clock.get_offset_us(), 30000);
 }
 
+
+// ── Clock: PLL behaviour ───────────────────────────────────────────────────
+//
+// The phase-lock loop is the heart of timing accuracy: it must converge on the
+// master's beat, bleed error off gradually (rather than jerking the tick
+// stream), and never ask the timer for a nonsensical interval.
+
+void test_clock_phase_error_converges() {
+    section("clock: phase error is bled off gradually, not applied at once");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, /*gain*/ 16);
+    clock.update_tempo_bpm(120.0f);
+    clock.start();
+
+    // Land a beat late enough to look like a large positive phase error.
+    timer.now_ = 0;
+    timer.tick();                    // tick 0 anchors the beat
+    timer.now_ = 30000;              // 30 ms after our beat boundary
+    clock.feed_beat(500, 1);
+    const int32_t err0 = clock.current_phase_error_us();
+    CHECK(err0 > 0);                 // we are leading, so slow down
+
+    // Each tick may only take roughly 1/gain of the remaining error, so a
+    // single tick must not swallow it all — that would pass network jitter
+    // straight through to the slave.
+    const uint32_t next = timer.tick();
+    const int32_t err1 = clock.current_phase_error_us();
+    CHECK(std::abs(err1) < std::abs(err0));          // converging
+    CHECK(std::abs(err1) > std::abs(err0) / 4);      // but not in one jump
+    // The interval was stretched, not collapsed.
+    CHECK(next > clock.current_tick_period_us());
+
+    // Many ticks later the error has settled. The correction is integer
+    // division by the gain, so once the residual drops below the divisor the
+    // correction rounds to zero and the last few microseconds stay — 16 us is
+    // four orders of magnitude below a MIDI tick, so that floor is harmless.
+    for (int i = 0; i < 200; ++i) timer.tick();
+    CHECK(std::abs(clock.current_phase_error_us()) < 16);
+}
+
+void test_clock_phase_error_wraps_the_short_way() {
+    section("clock: phase error takes the shortest way round the beat");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, 16);
+    clock.update_tempo_bpm(120.0f);   // 500 ms per beat
+    clock.start();
+
+    timer.now_ = 0;
+    timer.tick();
+    // A beat arriving 490 ms "late" is really 10 ms early: correcting forwards
+    // by 490 ms instead of back by 10 ms would audibly lurch the slave.
+    timer.now_ = 490000;
+    clock.feed_beat(500, 1);
+    const int32_t err = clock.current_phase_error_us();
+    CHECK(std::abs(err) < 250000);    // within half a beat either way
+}
+
+void test_clock_never_requests_a_degenerate_interval() {
+    section("clock: a corrupt phase error cannot stall or spin the timer");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, /*gain*/ 1);   // worst case: apply it all
+    clock.update_tempo_bpm(120.0f);
+    clock.start();
+
+    // Enormous negative offset — the correction wants a hugely negative
+    // interval. The floor must keep it positive and sane.
+    clock.set_offset_us(2000000);
+    for (int i = 0; i < 50; ++i) {
+        const uint32_t next = timer.tick();
+        CHECK(next > 0);
+        CHECK(next < 4000000);        // never longer than a few seconds
+    }
+}
+
+void test_clock_gain_zero_is_not_a_division_by_zero() {
+    section("clock: a zero gain divisor is coerced, not fatal");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, /*gain*/ 0);
+    clock.update_tempo_bpm(120.0f);
+    clock.start();
+    for (int i = 0; i < 10; ++i) CHECK(timer.tick() > 0);
+}
+
+void test_clock_tracks_bar_position_from_beats() {
+    section("clock: bar position follows the beats it is fed");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, 16);
+    clock.update_tempo_bpm(120.0f);
+    clock.start();
+    for (uint8_t beat = 1; beat <= 4; ++beat) {
+        clock.feed_beat(500, beat);
+        CHECK_EQ(clock.current_beat_in_bar(), beat);
+    }
+}
+
+void test_clock_ticks_only_while_running() {
+    section("clock: no ticks are emitted while stopped");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, 16);
+    clock.update_tempo_bpm(120.0f);
+
+    // Not started: the timer callback must decline to reschedule.
+    CHECK_EQ(timer.tick(), 0);
+
+    clock.start();
+    const uint64_t before = clock.ticks_emitted_total();
+    for (int i = 0; i < 12; ++i) timer.tick();
+    CHECK_EQ(clock.ticks_emitted_total() - before, 12);
+
+    clock.stop();
+    const uint64_t after_stop = clock.ticks_emitted_total();
+    timer.tick();
+    CHECK_EQ(clock.ticks_emitted_total(), after_stop);   // no further ticks
+}
+
+void test_clock_feed_beat_ignored_while_stopped() {
+    section("clock: beats fed while stopped do not accumulate phase error");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, 16);
+    clock.update_tempo_bpm(120.0f);
+    timer.now_ = 999999;
+    clock.feed_beat(500, 1);
+    CHECK_EQ(clock.current_phase_error_us(), 0);
+}
+
+void test_clock_restart_clears_stale_phase() {
+    section("clock: restarting clears stale phase error and bar position");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, 16);
+    clock.update_tempo_bpm(120.0f);
+    clock.start();
+    timer.now_ = 0;
+    timer.tick();
+    timer.now_ = 40000;
+    clock.feed_beat(500, 1);
+    CHECK(clock.current_phase_error_us() != 0);
+
+    clock.stop();
+    clock.start();
+    // A fresh start must not inherit the old error, or the first bar after a
+    // re-sync would be dragged by whatever happened before it.
+    CHECK_EQ(clock.current_phase_error_us(), 0);
+    CHECK_EQ(clock.current_tick_in_beat(), 0);
+}
+
+void test_clock_tempo_bounds() {
+    section("clock: absurd tempos are clamped into a usable range");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, 16);
+
+    clock.update_tempo_bpm(10000.0f);        // far above any real tempo
+    CHECK(clock.current_tick_period_us() >= 60000000u / 300u / 24u);
+    clock.update_tempo_bpm(0.5f);            // far below
+    CHECK(clock.current_tick_period_us() <= 60000000u / 20u / 24u);
+
+    // NaN and infinity must be refused outright rather than poisoning the timer.
+    const uint32_t sane = clock.current_tick_period_us();
+    clock.update_tempo_bpm(std::nanf(""));
+    CHECK_EQ(clock.current_tick_period_us(), sane);
+    clock.update_tempo_bpm(INFINITY);
+    CHECK_EQ(clock.current_tick_period_us(), sane);
+}
+
+void test_clock_offset_change_is_audible_quickly() {
+    section("clock: an offset nudge takes effect within a tick or two");
+    FakeMidi midi;
+    FakeTimer timer;
+    prolink::Clock clock(midi, timer, 16);
+    clock.update_tempo_bpm(120.0f);
+    clock.start();
+    timer.tick();
+
+    const int32_t before = clock.current_phase_error_us();
+    clock.set_offset_us(10000);        // operator nudges +10 ms of lead
+    const int32_t after = clock.current_phase_error_us();
+    // The delta is injected scaled by the gain so the very next tick applies
+    // most of it — calibrating by ear needs immediate feedback.
+    CHECK(after != before);
+    CHECK(std::abs(after - before) >= 10000);
+}
 }  // namespace
 
 // Defined in test_bridge.cpp; returns its failure count.
@@ -366,6 +555,16 @@ int main() {
     test_pitch_decoding();
     test_clock_tempo_and_transport();
     test_clock_offset_is_tempo_independent();
+    test_clock_phase_error_converges();
+    test_clock_phase_error_wraps_the_short_way();
+    test_clock_never_requests_a_degenerate_interval();
+    test_clock_gain_zero_is_not_a_division_by_zero();
+    test_clock_tracks_bar_position_from_beats();
+    test_clock_ticks_only_while_running();
+    test_clock_feed_beat_ignored_while_stopped();
+    test_clock_restart_clears_stale_phase();
+    test_clock_tempo_bounds();
+    test_clock_offset_change_is_audible_quickly();
 
     std::printf("\npackets/clock: %d checks, %d failure%s\n\n", g_checks, g_failures,
                 g_failures == 1 ? "" : "s");
