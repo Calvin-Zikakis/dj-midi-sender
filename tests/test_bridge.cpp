@@ -357,6 +357,86 @@ void test_a_long_link_outage_still_stops() {
     CHECK(wait_for([&] { return r.clock.stops_.load() >= 1; }, 2000));
 }
 
+void test_keep_playing_holds_when_the_deck_stops() {
+    section("keep playing: a stopped deck holds the clock instead of stopping it");
+    Rig r;
+    auto play = status_packet(1, 128.0f, 1, true);
+    r.status.deliver(play.data(), play.size());
+    auto down = beat_packet(1, 128.0f, 1);
+    r.beat.deliver(down.data(), down.size());
+    CHECK(wait_for([&] { return r.clock.starts_.load() == 1; }));
+    r.bridge->set_keep_playing(true);
+
+    // The deck stops. Without the setting this sends MIDI Stop; with it the
+    // clock carries on at the latched tempo so downstream gear keeps going.
+    auto paused = status_packet(1, 128.0f, 1, true, 5, 0xFF, /*playing*/ false);
+    r.status.deliver(paused.data(), paused.size());
+    CHECK(wait_for([&] { return r.bridge->holding(); }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    CHECK(r.clock.stops_.load() == 0);
+    CHECK(r.clock.running_.load());
+
+    // A deck driving us again ends the hold, with no Stop/Start in between.
+    // Real decks stream status at ~5 Hz and the play flag is debounced, so a
+    // single packet cannot satisfy it — deliver a stream like the hardware.
+    for (int i = 0; i < 6; ++i) {
+        r.status.deliver(play.data(), play.size());
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    CHECK(wait_for([&] { return !r.bridge->holding(); }));
+    CHECK(r.clock.stops_.load() == 0);
+    CHECK(r.clock.starts_.load() == 1);
+}
+
+void test_keep_playing_holds_through_silence() {
+    section("keep playing: a link gone quiet holds the clock too");
+    Rig r;   // silence_timeout_ms = 300
+    auto down = beat_packet(1, 120.0f, 1);
+    r.beat.deliver(down.data(), down.size());
+    CHECK(wait_for([&] { return r.clock.starts_.load() == 1; }));
+    r.bridge->set_keep_playing(true);
+
+    // A deck powered off mid-set, not just paused.
+    CHECK(wait_for([&] { return r.bridge->holding(); }, 1500));
+    CHECK(r.clock.stops_.load() == 0);
+    CHECK(r.clock.running_.load());
+}
+
+void test_keep_playing_off_still_stops() {
+    section("keep playing off leaves the stop behaviour alone");
+    Rig r;
+    auto play = status_packet(1, 128.0f, 1, true);
+    r.status.deliver(play.data(), play.size());
+    auto down = beat_packet(1, 128.0f, 1);
+    r.beat.deliver(down.data(), down.size());
+    CHECK(wait_for([&] { return r.clock.starts_.load() == 1; }));
+
+    auto paused = status_packet(1, 128.0f, 1, true, 5, 0xFF, /*playing*/ false);
+    r.status.deliver(paused.data(), paused.size());
+    CHECK(wait_for([&] { return r.clock.stops_.load() >= 1; }));
+    CHECK(!r.bridge->holding());
+}
+
+void test_taking_the_master_role_clears_the_hold() {
+    section("holding ends when the box stops following decks");
+    Rig r;
+    auto play = status_packet(1, 128.0f, 1, true);
+    r.status.deliver(play.data(), play.size());
+    auto down = beat_packet(1, 128.0f, 1);
+    r.beat.deliver(down.data(), down.size());
+    CHECK(wait_for([&] { return r.clock.starts_.load() == 1; }));
+    r.bridge->set_keep_playing(true);
+    auto paused = status_packet(1, 128.0f, 1, true, 5, 0xFF, /*playing*/ false);
+    r.status.deliver(paused.data(), paused.size());
+    CHECK(wait_for([&] { return r.bridge->holding(); }));
+
+    // Going standalone (and, by the same path, taking the master role) is a
+    // different state from following stopped decks — the panel must not keep
+    // showing HOLD once the box owns the tempo outright.
+    r.bridge->set_ignore_master(true);
+    CHECK(!r.bridge->holding());
+}
+
 void test_single_dropped_beat_does_not_realign() {
     section("one dropped beat packet must not trigger a Stop+Start");
     Rig r;
@@ -924,6 +1004,10 @@ int bridge_tests_main() {
     test_stops_on_silence();
     test_a_link_blip_does_not_stop_the_clock();
     test_a_long_link_outage_still_stops();
+    test_keep_playing_holds_when_the_deck_stops();
+    test_keep_playing_holds_through_silence();
+    test_keep_playing_off_still_stops();
+    test_taking_the_master_role_clears_the_hold();
 
     test_single_dropped_beat_does_not_realign();
     test_sustained_bar_slip_realigns();

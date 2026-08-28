@@ -23,6 +23,7 @@ enum MenuItem : uint8_t {
     kMenuItemActAsPlayer = 0, // join the link as a player (unlocks sync master)
     kMenuItemBpmStep,         // BPM per detent when the BOX owns the tempo
     kMenuItemOffsetStep,      // offset-button step per press
+    kMenuItemKeepPlaying,     // hold the clock when the decks stop
     kMenuItemCount,
 };
 
@@ -85,6 +86,8 @@ struct UiSnapshot {
     bool        act_as_player = false;  // link presence: unlocks sync master
     uint8_t     bpm_step_idx  = 0;     // index into kBpmStepValues
     uint8_t     offset_step_idx = 0;   // index into kOffsetStepValues
+    bool        keep_playing  = false;  // hold the clock when the decks stop
+    bool        holding       = false;  // clock running with no deck driving it
 };
 
 // Initialize the panel (call from the task that will render). Shows a splash.

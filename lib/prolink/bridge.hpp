@@ -164,6 +164,24 @@ public:
     void set_link_up(bool up) { link_up_.store(up); }
     bool link_up() const { return link_up_.load(); }
 
+    // "Keep playing": when the decks we follow stop, or the link goes quiet,
+    // hold the clock at its latched tempo instead of sending MIDI Stop, so
+    // downstream gear keeps its groove across a track change. holding() is
+    // true while that is happening — the clock is running with nothing
+    // driving it — and clears as soon as a deck plays again.
+    //
+    // Whether the box ALSO claims the DJ-Link master role while holding is a
+    // policy decision, not a mechanism: it needs a player slot on the link,
+    // which is what the panel's "Act as player" setting authorises. That
+    // lives in the firmware, which drives it through the normal source
+    // selection, so the panel stays in step with what the box is doing.
+    void set_keep_playing(bool on) {
+        keep_playing_.store(on);
+        if (!on) holding_.store(false);
+    }
+    bool keep_playing() const { return keep_playing_.load(); }
+    bool holding() const { return holding_.load(); }
+
     // Set the manual tempo absolutely (classic tap-tempo). nudge_manual_bpm()
     // is the relative version (spin fine-tune).
     void set_manual_bpm(float bpm);
@@ -239,6 +257,8 @@ private:
     std::atomic<bool>     playing_{false};
     std::atomic<bool>     free_run_{false};
     std::atomic<bool>     link_up_{true};
+    std::atomic<bool>     keep_playing_{false};
+    std::atomic<bool>     holding_{false};
     std::atomic<bool>     ignore_master_{false};
     std::atomic<bool>     manual_active_{false};
     std::atomic<float>    manual_bpm_{120.0f};

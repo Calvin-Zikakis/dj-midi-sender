@@ -554,6 +554,13 @@ CDJ status streams.
   - No status or beat packets arrive from the master for >2 seconds.
 - **Play-state debounce**: the XZ flickers the play flag briefly during cue
   scrubbing. Require >100 ms of stable state before reacting.
+- **"Keep playing" is not a stop either.** With the panel setting on,
+  `Bridge::set_keep_playing()` suppresses both stop paths — the master pausing
+  and the link going quiet — and the clock free-runs on its latched tempo with
+  `holding()` true. Whether the box also claims the DJ-Link master role while
+  holding is deliberately *not* in the core: it needs a player slot, which is a
+  policy the panel authorises, so the firmware drives it through the normal
+  source selection instead.
 - **Link faults are not stops.** Packets also stop arriving when the Ethernet
   link drops, and that is a network fault, not the DJ stopping the music. The
   firmware feeds `ETHERNET_EVENT_CONNECTED/DISCONNECTED` to

@@ -124,7 +124,9 @@ void render_menu(U8G2& oled, const UiSnapshot& s) {
     oled.drawStr(0, 8, "SETTINGS");
 
     for (uint8_t i = 0; i < kMenuItemCount; ++i) {
-        const int   y   = 18 + i * 13;  // 18, 31, 44
+        // 11 px pitch: 18, 29, 40, 51. A 13 px pitch put the fourth row's
+        // baseline at 57, whose descenders collide with the footer at 62.
+        const int   y   = 18 + i * 11;
         const bool  sel = (i == s.menu_index);
         const bool  ed  = editing && sel;
         const char* op  = ed ? "[" : "";
@@ -139,10 +141,14 @@ void render_menu(U8G2& oled, const UiSnapshot& s) {
             const uint8_t idx = ed ? static_cast<uint8_t>(s.menu_edit) : s.bpm_step_idx;
             const double  v   = (idx < kBpmStepCount) ? kBpmStepValues[idx] : 0.1;
             snprintf(buf, sizeof buf, "%s BPM step: %s%g%s", mk, op, v, cl);
-        } else {  // kMenuItemOffsetStep
+        } else if (i == kMenuItemOffsetStep) {
             const uint8_t idx = ed ? static_cast<uint8_t>(s.menu_edit) : s.offset_step_idx;
             const double  v   = (idx < kOffsetStepCount) ? kOffsetStepValues[idx] : 1.0;
             snprintf(buf, sizeof buf, "%s Offset: %s%gms%s", mk, op, v, cl);
+        } else {  // kMenuItemKeepPlaying
+            const bool on = ed ? (s.menu_edit != 0) : s.keep_playing;
+            snprintf(buf, sizeof buf, "%s Keep playing: %s%s%s",
+                     mk, op, on ? "yes" : "no", cl);
         }
         oled.drawStr(0, y, buf);
     }
@@ -192,8 +198,9 @@ void ui_display_render(const UiSnapshot& s) {
     // Tag slot shows only what the `src` line does NOT already say: transient
     // confirmations and in-flight state. (`MSTR`/`OFF` used to live here and
     // merely repeated the source.)
-    const char* mode_tag = s.resync_flash                  ? "RSYN"  // just re-synced
+    const char* mode_tag = s.resync_flash                    ? "RSYN"  // just re-synced
                          : (s.master_wanted && !s.is_master) ? "REQ "  // handshake running
+                         : s.holding                         ? "HOLD"  // decks stopped, still clocking
                                                              : "    ";
     g_oled.drawStr(96, 34, mode_tag);
 

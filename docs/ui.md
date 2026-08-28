@@ -74,6 +74,7 @@ The tag slot shows only what `src` does not already tell you:
 |---|---|
 | `RSYN` | brief confirmation that a re-sync was requested |
 | `REQ` | master requested, handshake in flight |
+| `HOLD` | the decks stopped but the clock is still running (*Keep playing*) |
 | (blank) | nothing to report |
 
 `mst` shows the device number currently holding DJ-Link master, or `us` when
@@ -95,13 +96,39 @@ the panel falls back to `follower master`.
 ## Settings menu
 
 Spin to scroll, push to edit, spin to change, push to save, tap to back. All
-three settings persist to NVS.
+four settings persist to NVS.
 
 | Item | Values | What it governs |
 |---|---|---|
 | **Act as player** | yes / no | Whether the box may take a player slot on the link. Unlocks `sync master` in the source list. Turning it off while the box is master releases the role first |
 | **BPM step** | 0.1 / 0.25 / 0.5 / 1 | BPM per encoder detent when the box owns the tempo (`sync` / `off`) |
 | **Offset step** | 0.1 / 0.5 / 1 ms | Clock-offset change per nudge press |
+| **Keep playing** | yes / no | Hold the clock when the decks you are following stop, instead of sending MIDI Stop |
+
+### Keep playing
+
+Normally the box stops the MIDI clock when the master deck stops, or when the
+link goes quiet. Downstream gear stops with it, which is right for a sync box
+and wrong for a set: a track ending should not kill the drum machine.
+
+With **Keep playing** on, the box holds its latched tempo instead and shows
+`HOLD`. What it does beyond that depends on whether it is allowed a player
+slot:
+
+| Act as player | On decks stopping |
+|---|---|
+| **no** | Holds the tempo locally — effectively standalone until the decks come back, then re-locks to them. Nothing on the link changes |
+| **yes** | Holds the tempo *and* claims `sync master`, so a deck that restarts with sync on locks back to the box instead of dragging the gear to its own tempo |
+
+The claim fires **once per stop episode**, and only re-arms once a deck is
+genuinely driving the clock again. Without that latch, a DJ reclaiming master
+while the decks are still stopped would drop the box back to `follower
+master`, the box would see stopped decks again and immediately grab the role
+back — the two fighting over it. Reclaiming works exactly as it always does:
+the deck's MASTER button, and the box steps down.
+
+With *Act as player* off there is no role to hold, so a returning deck's tempo
+wins. That is the trade for not taking a slot on the link.
 
 ## Deliberate design decisions
 
