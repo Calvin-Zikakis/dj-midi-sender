@@ -253,9 +253,27 @@ and a **Settings menu**.
   OLED flashes `RSYN`.
 - **Encoder push** -> Source-select. **Hold both nudges ~1 s** -> Settings menu.
 
-**Source-select** (`mstr / P1-P4 / off`) — **spin** moves a `>` cursor (the
-active source stays put), **push** confirms, **tap** cancels. `mstr` follows the
-master deck; `P1-P4` pin a deck; **`off`** ignores all decks -> standalone.
+**Source-select** (`auto / P1-P4 / mstr / off`) — **spin** moves a `>` cursor
+(the active source stays put), **push** confirms, **tap** cancels. It answers
+"what drives the clock":
+
+| Source | Meaning |
+|---|---|
+| `auto` | follow whichever deck holds the DJ-Link master role |
+| `P1`-`P4` | pin to that deck |
+| `mstr` | **the box is the tempo master** — it claims the role and the decks follow it |
+| `off` | standalone manual tempo, link ignored |
+
+**Tempo master (`mstr`)** — the box performs the Pro DJ Link master handoff:
+it asks the current master to yield, and only claims the role once that deck
+acknowledges (OLED shows `REQ` during the handshake, `MSTR` once it holds it).
+It takes over **at the tempo it was already following**, so grabbing master
+mid-set doesn't lurch the music; **spin** to nudge from there.
+
+A DJ can always take it back: press MASTER on a deck and the box acknowledges,
+steps down, and returns to `auto`. Selecting a different source also releases
+it — the box appoints a deck as master on the way out, so the link is never
+left without one.
 
 **Standalone (`off`)** — no DJ-Link needed. The clock cold-starts on a manual
 tempo (OLED shows `OFF`). **Tap in rhythm** = tap-tempo (averages the last 8

@@ -32,12 +32,13 @@ void ui_display_begin() {
 
 const char* ui_source_label(uint8_t src) {
     switch (src) {
-        case 0:  return "mstr";   // auto-track whoever holds the master flag
+        case 0:  return "auto";   // follow whichever deck holds the master flag
         case 1:  return "P1";
         case 2:  return "P2";
         case 3:  return "P3";
         case 4:  return "P4";
-        case 5:  return "off";   // ignore players — standalone tempo
+        case 5:  return "mstr";   // the BOX is the tempo master
+        case 6:  return "off";    // ignore players — standalone tempo
         default: return "?";
     }
 }
@@ -51,7 +52,7 @@ void render_source_select(U8G2& oled, const UiSnapshot& s) {
     oled.setFont(u8g2_font_5x8_tr);
     oled.drawStr(0, 7, "CLOCK SOURCE");
     for (uint8_t i = 0; i < kSourceCount; ++i) {
-        const int y = 14 + i * 8;  // 14,22,30,38,46,54
+        const int y = 14 + i * 7;  // 7 entries: 14..56, clear of the footer
         snprintf(buf, sizeof buf, "%s %s%s",
                  (i == s.proposed_src) ? ">" : " ",
                  ui_source_label(i),
@@ -142,6 +143,8 @@ void ui_display_render(const UiSnapshot& s) {
     // Mode tag: RSYNC flashes briefly right after a re-sync tap; otherwise
     // OFF = standalone; else FREE (MAN while manual-latched) / SYNC.
     const char* mode_tag = s.resync_flash ? "RSYN"
+                         : s.is_master     ? "MSTR"   // we hold the master role
+                         : s.master_wanted ? "REQ "   // handshake in flight
                          : s.ignore_master ? "OFF "
                          : s.free_run       ? (s.manual_bpm ? "MAN " : "FREE")
                                             : "SYNC";

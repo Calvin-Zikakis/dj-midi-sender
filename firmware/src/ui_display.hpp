@@ -42,9 +42,14 @@ inline constexpr float   kOffsetStepValues[] = {0.1f, 0.5f, 1.0f};
 inline constexpr uint8_t kOffsetStepCount    = 3;
 inline constexpr uint8_t kOffsetStepDefault  = 2;  // index of 1.0 ms
 
-// Clock sources: 0 = Master (auto-track), 1..4 = deck Pn, 5 = Off (standalone).
-inline constexpr uint8_t kSourceCount = 6;
-inline constexpr uint8_t kSourceOff   = 5;
+// Clock sources — "what drives the clock":
+//   0      = auto  : follow whichever deck holds the DJ-Link master role
+//   1..4   = P1..P4: pin to that deck
+//   5      = mstr  : the BOX is the tempo master (claims the role; decks follow)
+//   6      = off   : standalone manual tempo, link ignored
+inline constexpr uint8_t kSourceCount  = 7;
+inline constexpr uint8_t kSourceMaster = 5;
+inline constexpr uint8_t kSourceOff    = 6;
 
 // Clock-source label (see above).
 const char* ui_source_label(uint8_t src);
@@ -65,6 +70,8 @@ struct UiSnapshot {
     int32_t     phase_err_us  = 0;
     float       tapped_bpm    = 0.0f;
     bool        resync_flash  = false;  // brief "RSYNC" confirmation after a tap
+    bool        is_master     = false;  // box holds the DJ-Link tempo-master role
+    bool        master_wanted = false;  // master requested, handshake in flight
     const char* usb_state     = "--";  // short tag: rdy/wait/nomid/off/diag
     UiMode      ui_mode       = UiMode::kNormal;
     uint8_t     proposed_src  = 0;     // source-select cursor (kSourceSelect only)

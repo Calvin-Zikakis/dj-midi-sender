@@ -97,11 +97,15 @@ void Bridge::request_resync(bool immediate) {
 }
 
 void Bridge::set_master_mode(bool on) {
-    master_mode_.store(on);
     if (on) {
+        master_mode_.store(true);
         master_beat_in_bar_    = 0;
         last_master_status_ms_ = 0;
         master_confirmed_.store(false);
+        // Take over at the tempo we were already following, so grabbing master
+        // mid-set doesn't lurch the music. The DJ nudges from there.
+        const float following = last_known_bpm_.load();
+        if (following > 0.0f) manual_bpm_.store(following);
         // Keep requesting the handoff for a while (5 Hz cadence) until the
         // master yields; ~6 s ceiling so we don't spam forever if it never does.
         master_request_countdown_ = 30;
@@ -109,7 +113,34 @@ void Bridge::set_master_mode(bool on) {
         // decks. set_ignore_master() latches the manual tempo and the run loop
         // cold-starts the clock, whose per-beat callback drives beat emission.
         set_ignore_master(true);
+        return;
     }
+
+    // Releasing. Never leave the link without a tempo master: appoint a deck
+    // (SYNC_CONTROL "become master") and advertise it in our Mh, so the normal
+    // handoff dance runs. It will then request master and we step down in
+    // handle_status_packet; release_deadline_ms_ is the fallback if it doesn't.
+    const uint8_t  target = current_master_.load();
+    const uint32_t tip    = master_ip_.load();
+    if (master_confirmed_.load() && target != 0 && target != cfg_.device_num && tip != 0) {
+        yielding_to_.store(target);
+        uint8_t cmd[64];
+        size_t cn = build_sync_control_packet(cmd, sizeof(cmd), cfg_.device_name,
+                                              cfg_.device_num, SYNC_CMD_BECOME_MASTER);
+        bool ok = cn && beat_sock_.send(cmd, cn, tip, PORT_BEAT);
+        release_deadline_ms_ = now_ms() + 3000;
+        char m[96];
+        std::snprintf(m, sizeof(m), "releasing master — appointing device %u %s",
+                      target, ok ? "(0x2a sent)" : "(SEND FAILED)");
+        log(m);
+    } else {
+        // Not actually holding it — drop out of master mode immediately.
+        master_mode_.store(false);
+        master_confirmed_.store(false);
+        yielding_to_.store(0);
+        release_deadline_ms_ = 0;
+    }
+    master_request_countdown_ = 0;
 }
 
 void Bridge::on_master_beat() {
@@ -143,6 +174,18 @@ void Bridge::handle_master_yield_request(uint8_t requester, uint32_t requester_i
 
 void Bridge::maybe_broadcast_master_status(uint64_t t) {
     if (!master_mode_.load()) return;
+
+    // A release was requested but the appointed deck never claimed master —
+    // step down anyway rather than holding it hostage.
+    if (release_deadline_ms_ != 0 && t >= release_deadline_ms_) {
+        release_deadline_ms_ = 0;
+        yielding_to_.store(0);
+        master_confirmed_.store(false);
+        master_mode_.store(false);
+        set_ignore_master(false);
+        log("release timed out — dropping master anyway");
+        return;
+    }
     if (t - last_master_status_ms_ < 200) return;   // ~5 Hz, like real players
     last_master_status_ms_ = t;
     const float bpm = last_known_bpm_.load();
@@ -487,6 +530,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
         yielding_to_.store(0);
         master_confirmed_.store(false);
         master_mode_.store(false);
+        release_deadline_ms_ = 0;
         set_ignore_master(false);           // follow the deck's tempo again
         master_request_countdown_ = 0;
         log("yielded master back to the deck — following again");
