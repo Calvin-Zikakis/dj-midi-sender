@@ -367,6 +367,13 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     // not e.g. deck 2's idle status from a combined unit like the XDJ-XZ.
     if (cb_.on_beat) cb_.on_beat(*parsed);
 
+    // Standalone / tempo-master: WE are the tempo authority, so a deck's beats
+    // must not touch our clock. Phase-locking to a deck that is itself syncing
+    // to our grid is a feedback loop — each chases the other and the deck's
+    // playback lurches around the beat grid. And `last_known_bpm_` is the tempo
+    // we broadcast as master, so letting a deck overwrite it hijacks our grid.
+    if (ignore_master_.load()) return;
+
     // Beat-packet tempo is a fallback. Status packets are the lower-jitter
     // source (5 Hz, encode the same pitch_multiplier × track_bpm). Driving
     // the clock from BOTH sources at once means slight sample-timing
