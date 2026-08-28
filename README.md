@@ -48,7 +48,8 @@ nudge phase. A 24 PPQN clock is generated on a hardware timer (desktop:
 
 See [docs/architecture.md](docs/architecture.md) for protocol details, field
 offsets, and PLL design; [docs/hardware.md](docs/hardware.md) for the board and
-wiring; and [ROADMAP.md](ROADMAP.md) for status and what is next.
+wiring; [docs/ui.md](docs/ui.md) for the front panel; and
+[ROADMAP.md](ROADMAP.md) for status and what is next.
 
 ## Repo layout
 
@@ -161,6 +162,9 @@ CLI flags:
 --bind <addr>           UDP bind address (default 0.0.0.0; use 127.0.0.1 with replay)
 --interface <iface>     Network interface for virtual-CDJ announce (default: auto)
 --midi-port <name>      MIDI output port (default: first available)
+--device-name <s>       Virtual CDJ device name (default: xdj-bridge)
+--follow-device <n>     Pin to a specific deck (1..6); default auto
+--bpm-smooth <f>        EMA alpha for tempo updates (default 0.3)
 --list-midi             List MIDI output ports and exit
 --bpm <float>           Fallback BPM when no valid signal (default 120.0)
 --device-num <n>        Virtual CDJ device number (default 5)
@@ -267,7 +271,8 @@ and a **Settings menu**.
 
 **Tempo master (`sync master`)** — the box performs the Pro DJ Link master handoff:
 it asks the current master to yield, and only claims the role once that deck
-acknowledges (OLED shows `REQ` during the handshake, `MSTR` once it holds it).
+acknowledges (OLED shows `REQ` during the handshake; once it holds the role the
+source line reads `mst us`).
 It takes over **at the tempo it was already following**, so grabbing master
 mid-set doesn't lurch the music; **spin** to nudge from there.
 
@@ -312,8 +317,11 @@ you need the live XZ.
   is synced to a master, `Pitch1` tracks the master and `Pitch2` stays
   pinned to the local fader — they diverge. (The original handoff's `0x28`/
   `0x30` were wrong; corrected offsets are in [docs/architecture.md](docs/architecture.md).)
-- **Virtual CDJ uses device number 7.** CDJ deck numbers 1–4 are reserved
-  for real decks; 5–6 are reserved for mixers. 7 is safe.
+- **Device numbers.** Deck numbers 1–4 belong to real players and 5–6 to
+  mixers, so the firmware idles on 7 where it disturbs nothing. It claims a
+  player slot only while acting as tempo master, and hands it straight back —
+  see [docs/architecture.md](docs/architecture.md) for why both constraints
+  exist. The desktop binary defaults to 5.
 
 ## Status
 
@@ -321,15 +329,16 @@ The full pipeline runs on real hardware (Waveshare ESP32-S3-ETH): Ethernet in,
 parse, dual-source PLL, 24 PPQN clock, out over both the USB MIDI host jack and
 the 5-pin DIN simultaneously, locked to the master's tempo and pitch. The
 front-panel UI (OLED, encoder, buttons) drives source-select, a persisted
-settings menu, offset trim, free-run, standalone tap-tempo, and manual beat
-re-sync. The desktop binary is a validated reference implementation.
+settings menu, offset trim, standalone tap-tempo, manual beat re-sync, and
+claiming the DJ-Link tempo-master role. The desktop binary is a validated reference implementation.
 
 A drift-free timer plus continuous-microsecond phase lock keep slaves tight
 across tempo changes, and bar-slip realignment is gated behind a confidence
 counter so a dropped beat packet cannot cause a false stop.
 
-See [ROADMAP.md](ROADMAP.md) for the full status and what is next (the large
-item: ESP32 as Pro DJ Link tempo master, so CDJs sync to the box).
+The box can also act as the Pro DJ Link **tempo master**, so CDJs sync to it —
+see [docs/architecture.md](docs/architecture.md) for the handshake. See
+[ROADMAP.md](ROADMAP.md) for full status and what is next.
 
 ## Contributing
 

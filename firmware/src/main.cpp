@@ -251,7 +251,6 @@ std::atomic<prolink::Clock*>  g_clock{nullptr};
 // Small bits the live objects don't expose: latest pitch %, the encoder's
 // source selection (0 = auto, 1..4), and a tapped BPM (display-only for now).
 std::atomic<float>   g_pitch_pct{0.0f};
-std::atomic<float>   g_tapped_bpm{0.0f};
 std::atomic<uint8_t> g_selected_src{0};
 
 
@@ -561,8 +560,8 @@ void i2c_scan_diag() {
 // ── UI task ────────────────────────────────────────────────────────────
 // Drains encoder/button events, drives the nudge + source-select controls
 // against the live Bridge, and renders the OLED. Runs on Core 0 (away from
-// the clock-critical bridge/timer on Core 1); the SW-I2C full-frame refresh
-// is ~10 fps and yields to all timing-critical work.
+// the clock-critical bridge/timer on Core 1) at 25 fps over hardware I2C;
+// unchanged frames are not transmitted (see ui_display.cpp).
 void ui_task(void*) {
     firmware::ui_display_begin();
 #ifdef DIAG_SERIAL_STUB
@@ -823,7 +822,6 @@ void ui_task(void*) {
             s.beat_in_bar   = b->master_mode() ? b->master_beat_in_bar()
                                               : c->current_beat_in_bar();
             s.offset_ms     = b->total_offset_ms();
-            s.phase_err_us  = c->current_phase_error_us();
         }
         s.selected_src = g_selected_src.load();
         s.proposed_src = proposed_src;
@@ -834,7 +832,6 @@ void ui_task(void*) {
         s.bpm_step_idx    = bpm_step_idx;
         s.offset_step_idx = offset_step_idx;
         s.pitch_pct    = g_pitch_pct.load();
-        s.tapped_bpm   = g_tapped_bpm.load();
         s.resync_flash = (now < resync_flash_until);
         if (b) {
             s.master_wanted = b->master_mode();

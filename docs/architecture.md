@@ -34,8 +34,8 @@ the mixer's hardware MAC; destination `169.254.255.255` for broadcast traffic.
 - **Performance mode** (USB to rekordbox on laptop): XZ drops off Pro DJ Link
   entirely. Not viable for this project.
 - **Unanalyzed audio** (raw MP3 with no rekordbox beat grid): the `Mv` field
-  in status packets is not `0x8000`, so the BPM is not trusted. Tap-tempo
-  fallback is on the Phase-4 roadmap.
+  in status packets is not `0x8000`, so the BPM is not trusted. The front
+  panel's tap-tempo and standalone sources cover this case.
 
 ## Beat packet — port 50001, type `0x28`
 
@@ -46,8 +46,8 @@ All offsets are relative to the start of the UDP payload. Parsed by
 |--------|------|-------|-------|
 | `0x00` | 10 B | Magic header | ASCII `Qspt1WmJOL` |
 | `0x0A` | 1 B  | Packet type | `0x28` for beat |
-| `0x0B` | 21 B | Device name | ASCII, null-padded (e.g. `XDJ-XZ`) |
-| `0x20` | 1 B  | Device subtype | |
+| `0x0B` | 20 B | Device name | ASCII, null-padded (e.g. `XDJ-XZ`) |
+| `0x1F` | 1 B  | Device subtype | `0x01` |
 | `0x21` | 1 B  | Device number | 1–4, matches deck |
 | `0x22` | 2 B  | Payload length | uint16 BE |
 | `0x24` | 4 B  | ms until next beat | uint32 BE |
@@ -61,7 +61,7 @@ All offsets are relative to the start of the UDP payload. Parsed by
 | `0x58` | 2 B  | reserved | typically `0x0000` |
 | `0x5A` | 2 B  | Track BPM × 100 | uint16 BE |
 | `0x5C` | 1 B  | Beat-within-bar | 1–4 |
-| `0x5D` | 1 B  | Device number (echo) | |
+| `0x5F` | 1 B  | Device number (echo) | `0x5D`–`0x5E` are zero |
 
 ### Beat packet timing characteristics
 
@@ -110,9 +110,11 @@ role is exactly two fields:
 - **`0x89` bit 5 set** (flags `0xEC` on the master vs `0xCC` on followers), and
 - **`0x9E` = `0x01`** (`Mm`, "I am master"); everyone else has `0x00`.
 
-`0x9F` (`Mh`) is `0xFF` on all when no handoff is in progress. To claim master,
-those are the fields to assert; the takeover *handshake* (getting a current
-master to yield via `Mh`) is the piece still to be worked out live.
+`0x9F` (`Mh`) is `0xFF` on all when no handoff is in progress; a yielding
+master puts the incoming device's number there. Asserting those fields is not
+enough on its own — an existing master must first be asked to yield. That
+handshake is implemented and verified live; see
+[Becoming the tempo master](#becoming-the-tempo-master-working).
 
 Sources cross-checked: [Deep Symmetry beat-link `CdjStatus.java`](https://github.com/Deep-Symmetry/beat-link/blob/master/src/main/java/org/deepsymmetry/beatlink/CdjStatus.java),
 [python-prodj-link `packets.py`](https://github.com/flesniak/python-prodj-link/blob/master/prodj/network/packets.py)
@@ -194,14 +196,45 @@ capture, substituting the bridge's MAC and IP):
 |--------|------|-------|
 | `0x00` | 10 B | Magic header |
 | `0x0A` | 1 B  | Type: `0x06` |
-| `0x0B` | 20 B | Device name (null-padded ASCII, e.g. `xdj-bridge`) |
-| `0x1F` | 1 B  | Subtype: `0x01` |
-| `0x20` | 1 B  | Subtype echo: `0x02` |
-| `0x21` | 1 B  | Device number: `0x07` (safe — CDJ decks are 1–4, mixers 5–6) |
-| `0x22` | 2 B  | Packet length: `0x0036` |
-| `0x24` | 6 B  | MAC address |
-| `0x2A` | 4 B  | IP address |
-| `0x2E` | 8 B  | Padding / flags (zeros) |
+| `0x0B` | 1 B  | Padding (zero) |
+| `0x0C` | 20 B | Device name (null-padded ASCII, e.g. `xdj-bridge`) |
+| `0x20` | 1 B  | Constant `0x01` |
+| `0x21` | 1 B  | Device type: `0x02` (CDJ) |
+| `0x23` | 1 B  | Packet length: `0x36` (single byte, not a uint16) |
+| `0x24` | 1 B  | Device number |
+| `0x25` | 1 B  | Constant `0x01` |
+| `0x26` | 6 B  | MAC address |
+| `0x2C` | 4 B  | IP address (big-endian) |
+| `0x30` | 1 B  | Device count: `0x02` (CDJ-3000 compat) |
+| `0x34` | 1 B  | Flags: `0x01` (is player or mixer) |
+| `0x35` | 1 B  | Constant `0x64` (CDJ-3000 compat) |
+
+Built by `build_keepalive_packet()`; the layout above is what that function
+writes, and the unit tests assert it.
+
+### Claiming a device number first
+
+A real player does not simply start sending keep-alives on a number — it
+negotiates ownership. Skipping that and squatting on a number is what upsets
+other gear (an XDJ-XZ stops allowing its own deck-to-deck master handoff), so
+the bridge performs the documented sequence before any keep-alive goes out,
+all broadcast to port 50000 at ~300 ms:
+
+| Stage | Type | Bytes | Carries |
+|-------|------|-------|---------|
+| hello | `0x0A` | 38 | device name |
+| claim 1 | `0x00` | 44 | name, MAC, packet counter |
+| claim 2 | `0x02` | 50 | name, IP, MAC, **the number being claimed**, counter, auto-assign flag |
+| claim 3 | `0x04` | 38 | name, number, counter |
+
+Note these packets put the device name at **`0x0C`** (20 bytes), not `0x0B` as
+the beat and status packets do. Each stage is sent three times at startup; a
+mid-session switch (taking or releasing the master role) sends one of each at
+150 ms so the change is not audible as a multi-second stall. `Bridge` steps the
+sequence from its run loop and holds keep-alives until it completes.
+
+Layouts follow beat-link's `VirtualCdj` claim templates; the unit tests assert
+them byte for byte.
 
 Reference implementations: `Session::SendAnnounce()` in
 [`grantHarris/prolink-cpp`](https://github.com/grantHarris/prolink-cpp);
@@ -209,7 +242,9 @@ Reference implementations: `Session::SendAnnounce()` in
 
 Note: `lib/prolink/bridge.cpp` builds the keep-alive packet but only the
 desktop layer can fill in the bridge's actual MAC and IP. Both are passed
-into `Bridge::set_local_iface(mac, ip)` before `run()` is called.
+on `BridgeConfig` (`mac`, `local_ip`, `broadcast_ip`) before the `Bridge` is
+constructed — see `desktop/main.cpp`, which fills them from the chosen
+interface.
 
 ## Dual-source clock architecture
 
@@ -229,7 +264,7 @@ flowchart TD
     ST["status receiver :50002"]
     BT["beat receiver :50001"]
     ST -->|"Pitch1, BPM, flags, Mv"| MT["master tracking"]
-    MT -->|"if master and playing and Mv ok"| UT["clock.update_tempo(bpm x pitch1)"]
+    MT -->|"if master and playing and Mv ok"| UT["clock.update_tempo_bpm(bpm x pitch1)"]
     ST -->|"play/stop transition"| SS["clock.start / clock.stop"]
     BT -->|"if master device"| CP["clock.feed_beat (phase only)"]
     UT --> CLK["Clock engine (24 PPQN)"]
@@ -250,7 +285,7 @@ The pseudocode below shows the same flow in detail.
 │    parse Pitch1, BPM, flags, Mv, device_num                      │
 │    update master tracking                                        │
 │    if master && playing && Mv == 0x8000:                         │
-│      clock.update_tempo(bpm × pitch1_mult)  ─────────────────►  │
+│      clock.update_tempo_bpm(bpm × pitch1_mult) ──────────────►  │
 │    on play/stop transition:                                      │
 │      clock.start() / clock.stop()             ───────────────►  │
 │                                                                  │
@@ -265,7 +300,7 @@ The pseudocode below shows the same flow in detail.
          │                                                            │
          │  ITimer fires every tick_period_us (24 PPQN)               │
          │                                                            │
-         │  update_tempo(bpm):                                        │
+         │  update_tempo_bpm(bpm):                                    │
          │    tick_period_us = 60_000_000 / bpm / 24                 │
          │    (immediate, no smoothing — 200 ms cadence is enough)    │
          │                                                            │
@@ -411,7 +446,7 @@ and an XDJ-XZ. Behind `Bridge::set_master_mode()`:
    `Mm`, leaves master mode, and resumes following.
 
    A real deck-to-deck handoff and both directions of the box's handoff are
-   recorded in `docs/local/handoff-dance.txt`.
+   exercised end to end by the bridge tests in `tests/test_bridge.cpp`.
 
    Practical notes: a takeover claims a **real deck number** (`MASTER_DEVICE_NUM`,
    default 4) rather than the follower-mode vCDJ number 7, and the box must be
@@ -428,11 +463,22 @@ and an XDJ-XZ. Behind `Bridge::set_master_mode()`:
    seeds the box's tempo from whatever it was following, so the takeover does
    not lurch the music.
 
-   **Device number matters.** Do not claim 1-4: those are deck slots, and a
-   4-channel unit like the XDJ-XZ owns all four. Squatting on one (we tried 4)
-   breaks that mixer's own master arbitration — it stops letting you pass master
-   between its decks. The box uses **5** (a mixer slot; the protocol lets a
-   mixer hold tempo master), for both follower and master roles.
+   **Device number matters**, and the two constraints conflict:
+
+   - Only **player** slots (1-4) can hold tempo master. On mixer slots (5/6)
+     the current master offers the handoff — it sets its `Mh` — but never
+     completes it.
+   - But a 4-channel unit like the XDJ-XZ treats all four player slots as its
+     own. Occupying one permanently breaks that mixer's own master arbitration:
+     it stops letting you pass master between its decks, even when the box has
+     performed a proper claim handshake.
+
+   So the box **idles on a number outside both ranges** (`DEVICE_NUM`, 7) and
+   re-runs the claim handshake to take a player slot (`MASTER_DEVICE_NUM`, 4)
+   only for as long as it is actually master, handing the slot back on every
+   exit path. You do not need deck-to-deck handoff while the box *is* the
+   master, so the conflict never bites. Both are overridable per rig, and
+   `BridgeConfig::device_num` defaults to 5 for the desktop build.
 
 ## Master device tracking
 
@@ -440,11 +486,20 @@ The master flag is in status-packet flags (bit 5). Track which device
 currently has the bit set:
 
 ```cpp
-if (status.is_master() && status.is_playing()) {
+// A pinned selection always wins; otherwise follow the master flag, and
+// bootstrap from the first device seen if nobody has claimed it yet.
+if (force_master_device_ != 0) {
+    current_master_ = force_master_device_;
+} else if (status.is_master() || current_master_ == 0) {
     current_master_ = status.device_num;
 }
 bool is_from_master = (pkt.device_num == current_master_);
 ```
+
+Note the master flag alone is enough — `is_playing()` is deliberately *not*
+required. The flag is the protocol's "this is the tempo authority"
+designation and transfers between decks independently of play state, so a
+paused master is still the deck to track.
 
 When only the XDJ-XZ is on the network, all packets come from device 1
 and it is always master. This logic also handles future multi-deck setups
@@ -491,23 +546,29 @@ The core is pure C++17 with no platform headers beyond `<cstdint>`,
 // lib/prolink/bridge.hpp
 class IUdpSocket {
 public:
-    virtual int  recv(uint8_t* buf, size_t len, uint32_t timeout_ms) = 0;
+    // src_ip receives the sender's address (host order) when non-null — the
+    // tempo-master handoff request has to be unicast back to the master.
+    virtual int  recv(uint8_t* buf, size_t len, uint32_t timeout_ms,
+                      uint32_t* src_ip = nullptr) = 0;
     virtual bool send(const uint8_t* buf, size_t len,
-                      uint32_t ip_be, uint16_t port) = 0;
+                      uint32_t ip, uint16_t port) = 0;
     virtual ~IUdpSocket() = default;
 };
 
+// lib/prolink/clock.hpp
 class IMidiOut {
 public:
-    virtual void send_byte(uint8_t byte) = 0;
+    virtual void send_byte(uint8_t b) = 0;
     virtual ~IMidiOut() = default;
 };
 
 class ITimer {
 public:
-    virtual void set_interval_us(uint32_t interval_us,
-                                 std::function<void()> on_tick) = 0;
-    virtual void cancel() = 0;
+    // The callback returns the interval to the next tick in microseconds;
+    // returning 0 stops the timer.
+    virtual void start(std::function<uint32_t()> on_tick) = 0;
+    virtual void stop() = 0;
+    virtual uint64_t now_us() const = 0;
     virtual ~ITimer() = default;
 };
 ```
@@ -515,8 +576,8 @@ public:
 | Concern      | Desktop (Phase 1)                              | Firmware (Phase 2+)                            |
 |--------------|------------------------------------------------|------------------------------------------------|
 | `IUdpSocket` | `UdpPosix` — BSD sockets                       | `UdpW5500` — lwIP over SPI                     |
-| `IMidiOut`   | `MidiRtMidi` — CoreMIDI → OP-XY (USB MIDI)     | `MidiUart` (DIN) + `MidiUsbHost` (TinyUSB)     |
-| `ITimer`     | `TimerPosix` — `std::thread` + `sleep_until`   | replaced by [`uClock`](https://github.com/midilab/uClock) — hardware timer + 24 PPQN |
+| `IMidiOut`   | `MidiRtMidi` — CoreMIDI to a USB MIDI device   | `MidiFanOut` over `MidiUart` (DIN, IDF uart) + `MidiHostUsb` (IDF `usb_host`) |
+| `ITimer`     | `TimerPosix` — `std::thread` + `sleep_until`   | `TimerEsp` — `esp_timer` one-shot, cumulative deadlines |
 
 ### Phase 1 MIDI path: OP-XY via the Mac's USB
 
@@ -527,31 +588,34 @@ the same way it opens any other MIDI port (`--midi-port "OP-XY"` or
 `--list-midi` to see the exact string). No DIN, no USB-MIDI-to-DIN
 adapter, no host-mode anything.
 
-This is a deliberate Phase 1 / Phase 2 split. Phase 1 validates the
-network-side logic (parsers + dual-source PLL + virtual CDJ + master
-tracking) by leveraging macOS's USB MIDI stack. Phase 2 replaces that
-stack with the ESP32-S3's TinyUSB host mode wrapped by ESP32_Host_MIDI,
-keeping the OP-XY as the same target — only the host changes.
+That was a deliberate split: the desktop binary validated the network-side
+logic (parsers, dual-source PLL, virtual CDJ, master tracking) on macOS's USB
+MIDI stack before any firmware existed. The firmware then replaced that stack
+with the ESP32-S3 acting as USB host via ESP-IDF's `usb_host` library, keeping
+the same synths as targets — only the host changed. DIN output followed and is
+now validated too; both sinks run off the one PLL.
 
-The Sub 27 (DIN MIDI) is a Phase-2 target — it needs the firmware's UART
-DIN output. We're not testing DIN MIDI in Phase 1.
+### Firmware timer
 
-### Firmware variation — no `ITimer`
+The firmware uses the same `ITimer` abstraction as the desktop: `TimerEsp`
+([`firmware/src/timer_esp.hpp`](../firmware/src/timer_esp.hpp)) wraps an
+ESP-IDF `esp_timer` one-shot, re-armed each tick against a cumulative absolute
+deadline so dispatch latency cannot accumulate into drift. uClock was evaluated
+and dropped — 2.2.x needs arduino-esp32 v3 timer APIs and this platform ships
+v2.x.
 
-The firmware doesn't actually use `ITimer`. uClock owns the hardware
-timer and the bridge feeds it `setTempo(bpm)` + `clockMe()` callbacks.
-The core exposes both hooks (a `Clock` class that consumes `ITimer`,
-*and* a callback-style `IClockSink` interface) so the same `Bridge`
-works either way.
+The core still exposes both a `Clock` (which consumes `ITimer`) and the
+callback-style `IClockSink` the `Bridge` talks to, so an alternative tick
+generator could be substituted without touching `bridge.cpp`.
 
 ### Why C++17 (not Python, not Rust)
 
 - **Code reuse is real**: `lib/prolink/` compiles identically on macOS and
   ESP32-S3. No rewrite between Phase 1 and Phase 2.
-- **The ESP32 ecosystem is C++ native**: uClock, ESP32_Host_MIDI, TinyUSB,
-  W5500 drivers are all PlatformIO/Arduino C++ libraries.
-- **USB MIDI host is solved in C++**: ESP32_Host_MIDI wraps TinyUSB host
-  mode. In Rust, this is unsolved.
+- **The ESP32 ecosystem is C++ native**: the IDF's `usb_host`, `uart`,
+  `esp_timer` and W5500 drivers, plus U8g2 and NeoPixel, are all C/C++.
+- **USB MIDI host is solved in C++**: ESP-IDF ships a usable USB host stack.
+  In Rust, this is unsolved.
 - **`prolink-cpp` is a direct reference**: same language, adapt directly.
 - **`cardinia`** (a shipped commercial product doing exactly this) is C++.
 
@@ -566,9 +630,9 @@ in `lib/prolink/` was made with the firmware target in mind:
 
 | Desktop                                      | Firmware                                                       |
 |----------------------------------------------|----------------------------------------------------------------|
-| `std::thread` + `sleep_until` (TimerPosix)   | uClock — ESP32 hardware timer ISR, µs-resolution               |
-| BSD UDP socket                               | lwIP raw UDP callback on W5500                                 |
-| RtMidi → CoreMIDI → OP-XY (USB)              | UART TX for DIN + TinyUSB MIDI host for USB-A                  |
+| `std::thread` + `sleep_until` (TimerPosix)   | `TimerEsp` — `esp_timer` one-shot, µs-resolution                |
+| BSD UDP socket                               | lwIP BSD sockets over the W5500                                |
+| RtMidi → CoreMIDI → USB synth                | `MidiUart` (DIN) + `MidiHostUsb` (IDF `usb_host`), fanned out   |
 | `float` periods                              | `uint32_t` microseconds (no FPU needed in firmware)            |
 | `~/.config/dj-midi-sender.json` for offset   | NVS / EEPROM region                                            |
 

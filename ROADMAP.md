@@ -26,9 +26,10 @@ design, and [docs/hardware.md](docs/hardware.md) for the board and wiring.
   PLL. Validated on hardware (steady BPM, sub-0.1 ms per-tick jitter into a
   MIDI interface). Both outputs run simultaneously off the single clock.
 - **Front-panel UI.** OLED status screen, EC11 encoder, and buttons drive
-  source-select (master / per-deck / standalone), a settings menu, offset trim,
-  free-run, and a standalone tap-tempo mode. All settings persist to NVS.
-- **Manual beat re-sync.** A front-panel tap re-emits MIDI Start on the
+  source-select (follower / per-deck / sync master / standalone), a settings
+  menu, offset trim, and a standalone tap-tempo mode. All settings persist to
+  NVS.
+- **Manual beat re-sync.** A front-panel tap re-emits MIDI Stop+Start on the
   master's next downbeat to snap a locally-restarted slave back into bar
   alignment (MIDI clock carries tempo but not position).
 - **Lock quality.** Drift-free timer plus continuous-microsecond phase lock;
@@ -69,5 +70,7 @@ design, and [docs/hardware.md](docs/hardware.md) for the board and wiring.
   mode.
 - **Rekordbox-analyzed tracks for valid BPM.** Unanalyzed audio marks the tempo
   invalid; the clock freezes the last known good tempo in that case.
-- **Virtual CDJ uses a safe device number.** Deck numbers 1-4 are reserved for
-  real decks and 5-6 for mixers.
+- **Device numbers.** Deck numbers 1-4 belong to real players and 5-6 to
+  mixers, so the box idles outside both. It claims a player slot only while
+  acting as tempo master — only player slots can hold the role — and releases
+  it immediately afterwards.
