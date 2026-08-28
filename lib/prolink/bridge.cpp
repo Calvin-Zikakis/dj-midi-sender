@@ -113,6 +113,10 @@ void Bridge::set_master_mode(bool on) {
         release_deadline_ms_ = 0;
         // Claim a player slot for the duration — only those can hold master.
         restart_device_claim(cfg_.master_device_num);
+        // Remember how we were running so releasing master restores it rather
+        // than always reverting to "follow a deck" (which would silently undo a
+        // standalone selection).
+        pre_master_ignore_ = ignore_master_.load();
         // Take over at the tempo we were already following, so grabbing master
         // mid-set doesn't lurch the music. The DJ nudges from there.
         const float following = last_known_bpm_.load();
@@ -195,7 +199,7 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
         yielding_to_.store(0);
         master_confirmed_.store(false);
         master_mode_.store(false);
-        set_ignore_master(false);
+        set_ignore_master(pre_master_ignore_);
         restart_device_claim(idle_device_num_);
         log("release timed out — dropping master anyway");
         return;
@@ -259,6 +263,11 @@ void Bridge::push_offset_to_clock_() {
 
 void Bridge::apply_tempo_(float bpm) {
     if (bpm <= 0.0f) return;
+    // While standalone or acting as tempo master we ARE the authority: never
+    // let a deck's tempo drive our clock. (manual_active_ normally covers this,
+    // but it can be cleared independently — e.g. toggling Sync/Free in the
+    // menu — and a hijacked tempo while master is very visible.)
+    if (ignore_master_.load()) return;
     if (manual_active_.load()) return;  // manual tempo latched — don't override
     float alpha = cfg_.bpm_smoothing_alpha;
     if (alpha <= 0.0f) alpha = 1.0f;
@@ -561,7 +570,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
         master_confirmed_.store(false);
         master_mode_.store(false);
         release_deadline_ms_ = 0;
-        set_ignore_master(false);           // follow the deck's tempo again
+        set_ignore_master(pre_master_ignore_);   // restore the pre-master source
         master_request_countdown_ = 0;
         restart_device_claim(idle_device_num_);  // give the player slot back
         log("yielded master back to the deck — following again");

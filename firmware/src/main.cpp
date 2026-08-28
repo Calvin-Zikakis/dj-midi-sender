@@ -600,6 +600,7 @@ void ui_task(void*) {
     // release so it's distinguishable from the hold-tap+spin BPM modifier.
     uint32_t tap_down_ms       = 0;
     bool     tap_moved         = false;  // spun while tap held → it's the modifier
+    bool     tap_consumed      = false;  // used as back/cancel by a sub-mode
     bool     prev_tap_held     = false;
     uint32_t resync_flash_until = 0;      // OLED "RSYNC" confirmation window
     constexpr uint32_t kTapMaxMs = 400;   // longer press = a hold, not a tap
@@ -621,7 +622,7 @@ void ui_task(void*) {
 
         // Track the tap gesture across every mode so a clean short tap (no spin)
         // can be recognized on release. Consumed only in Normal / non-off below.
-        if (btns & firmware::kBtnTap) { tap_down_ms = now; tap_moved = false; }
+        if (btns & firmware::kBtnTap) { tap_down_ms = now; tap_moved = false; tap_consumed = false; }
         if (tap_held && steps != 0)   tap_moved = true;
 
 #ifdef DIAG_SERIAL_STUB
@@ -664,7 +665,7 @@ void ui_task(void*) {
                     b->nudge_manual_bpm(static_cast<float>(steps) * bpm_step);
                 // Clean short tap released with no spin → beat re-sync. Free =
                 // restart now; Sync = realign on the master's next downbeat.
-                if (prev_tap_held && !tap_held && !tap_moved &&
+                if (prev_tap_held && !tap_held && !tap_moved && !tap_consumed &&
                     (now - tap_down_ms) < kTapMaxMs && b) {
                     b->request_resync(b->free_run());
                     resync_flash_until = now + 900;
@@ -717,6 +718,7 @@ void ui_task(void*) {
                 }
                 ui_mode = firmware::UiMode::kNormal;
             } else if (btns & firmware::kBtnTap) {         // tap = cancel/back
+                tap_consumed = true;   // don't let the release fire a re-sync
                 ui_mode = firmware::UiMode::kNormal;
             } else if (now - mode_activity_ms >= kSourceSelectIdleMs) {
                 ui_mode = firmware::UiMode::kNormal;        // idle auto-cancel
@@ -741,6 +743,7 @@ void ui_task(void*) {
                 mode_activity_ms = now;
                 ui_mode          = firmware::UiMode::kMenuEdit;
             } else if (btns & firmware::kBtnTap) {
+                tap_consumed = true;
                 ui_mode = firmware::UiMode::kNormal;
             } else if (now - mode_activity_ms >= kMenuIdleMs) {
                 ui_mode = firmware::UiMode::kNormal;
@@ -777,6 +780,7 @@ void ui_task(void*) {
                 mode_activity_ms = now;
                 ui_mode          = firmware::UiMode::kMenu;
             } else if (btns & firmware::kBtnTap) {             // cancel
+                tap_consumed     = true;
                 mode_activity_ms = now;
                 ui_mode          = firmware::UiMode::kMenu;
             } else if (now - mode_activity_ms >= kMenuIdleMs) {

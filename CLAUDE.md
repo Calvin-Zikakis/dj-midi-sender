@@ -15,6 +15,7 @@ Doc map — what to touch for what (all public/tracked):
 | [ROADMAP.md](ROADMAP.md) | status (done vs next) and roadmap changes |
 | [docs/architecture.md](docs/architecture.md) | protocol, packet offsets, or clock/PLL design changes |
 | [docs/hardware.md](docs/hardware.md) | board, pin map, wiring, resistor values, hardware gotchas |
+| [docs/ui.md](docs/ui.md) | front-panel controls: gestures, modes, menu items |
 
 `docs/local/` holds personal working notes (session log, historical handoff/
 context docs) and is **gitignored** — keep it as a private scratchpad if you
