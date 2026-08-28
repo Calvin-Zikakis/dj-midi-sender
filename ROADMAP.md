@@ -4,7 +4,9 @@ The end product is a standalone box that plugs into a Pro DJ Link Ethernet
 switch (alongside the CDJs) and exposes MIDI clock over both a 5-pin DIN jack
 and a USB MIDI host port — no laptop in the signal chain. A drum machine
 plugged into it behaves like another deck in sync: tempo follows the master's
-pitch fader, bar position aligns with the master.
+pitch fader, bar position aligns with the master. It also works the other way
+round — the box can claim the tempo-master role itself, so the CDJs sync to the
+drum machine.
 
 See [docs/architecture.md](docs/architecture.md) for the protocol and clock
 design, and [docs/hardware.md](docs/hardware.md) for the board and wiring.

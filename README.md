@@ -2,16 +2,18 @@
 
 [![CI](https://github.com/Calvin-Zikakis/dj-midi-sender/actions/workflows/ci.yml/badge.svg)](https://github.com/Calvin-Zikakis/dj-midi-sender/actions/workflows/ci.yml)
 
-Standalone bridge that turns a Pioneer XDJ-XZ's Pro DJ Link Ethernet broadcast
-into rock-solid MIDI clock with continuous tempo tracking. The hardware is an
-**ESP32-S3 + W5500** box with both a **USB MIDI host jack** and a **5-pin DIN
-output** — no laptop in the signal chain.
+Standalone bridge between a Pioneer XDJ-XZ's Pro DJ Link Ethernet broadcast and
+rock-solid MIDI clock — **in both directions**. It follows whichever deck holds
+the tempo-master role, or claims that role itself so the CDJs sync to *it*. The
+hardware is an **ESP32-S3 + W5500** box with both a **USB MIDI host jack** and a
+**5-pin DIN output** — no laptop in the signal chain.
 
 It runs on real hardware today: a Waveshare ESP32-S3-ETH clocks class-compliant
 USB MIDI synths (plugged into the box's USB-A host jack) and a DIN synth
 simultaneously, all locked to the deck's tempo and following pitch-fader moves.
-The desktop binary drives the same core over a Mac's MIDI stack and remains a
-useful reference and protocol-debugging tool.
+The tempo-master handoff has been validated live in both directions against an
+XDJ-XZ and an XDJ-700. The desktop binary drives the same core over a Mac's MIDI
+stack and remains a useful reference and protocol-debugging tool.
 
 Outputs:
 
@@ -347,8 +349,15 @@ across tempo changes, and bar-slip realignment is gated behind a confidence
 counter so a dropped beat packet cannot cause a false stop.
 
 The box can also act as the Pro DJ Link **tempo master**, so CDJs sync to it —
-see [docs/architecture.md](docs/architecture.md) for the handshake. See
-[ROADMAP.md](ROADMAP.md) for full status and what is next.
+see [docs/architecture.md](docs/architecture.md) for the handshake.
+
+Two behaviours worth knowing about, both off or invisible until they matter:
+**Keep playing** (settings menu) holds the clock when the decks you are
+following stop, so a track ending does not kill the drum machine; and a dropped
+Ethernet link no longer stops the clock at all — it free-runs on the latched
+tempo and re-locks when the link returns. See [docs/ui.md](docs/ui.md).
+
+See [ROADMAP.md](ROADMAP.md) for full status and what is next.
 
 ## Contributing
 
