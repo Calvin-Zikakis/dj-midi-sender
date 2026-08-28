@@ -417,25 +417,33 @@ order:
 
    `build_sync_control_packet()` emits the `0x2a` command and the bridge fires
    a burst of it on `set_master_mode(true)`. Live result: **the XDJ-700 does
-   not react** to a broadcast `0x2a` "become master." That matches the beat-link
-   semantics — `appointTempoMaster` commands a *target* to become master, it is
-   not "make me master," and beat-link **unicasts** it.
+   not react** to a broadcast `0x2a` "become master" — expected, since
+   `SYNC_CONTROL` (`0x2a`) commands a *target* to become master (not "make me
+   master") and is unicast.
 
-   The deeper finding: **beat-link itself never self-becomes master from an
-   existing master.** Its `VirtualCdj` only *appoints other* (real) devices and
-   *receives* yields (`processUpdate`: when a status packet's `Mh` names us, set
-   `master = true`). There is no published `becomeTempoMaster()` — so wresting
-   master from a live deck is beyond what the public reverse-engineering covers.
-   The dedicated `MASTER_HANDOFF_REQUEST` (`0x26`) / `RESPONSE` (`0x27`) types
-   are exchanged **unicast between real players** during a handoff, so the only
-   way to learn their payloads is a **promiscuous capture** (mirror/hub port +
-   Wireshark) of a real deck-to-deck handoff — the box can't see them, and the
-   reference code doesn't send them. That capture is the concrete next step.
+   **The takeover IS solved and published** (Deep Symmetry, sync.adoc /
+   `sync.html`; beat-link implemented a virtual CDJ becoming master in 2018 —
+   an earlier note here wrongly concluded otherwise). No promiscuous capture is
+   needed. The sequence:
 
-   What *does* work today: the box asserts `mm=1` with `Syncn=max+1` and
-   broadcasts a well-formed grid — so it should be followable in scenarios where
-   no other master is contending. Taking over from an active master is the open
-   frontier.
+   1. The taker sends a **`MASTER_HANDOFF_REQUEST` (type `0x26`)** **unicast to
+      the current master on port 50001**, carrying its own device number `D`,
+      `len_r = 0x0004`. Shape: `<header> 26 … D … 00 04 00 00 00 D`.
+   2. The current master replies **`MASTER_HANDOFF_RESPONSE` (type `0x27`)**
+      unicast to the taker (`len_r = 0x0008`, trailing `… 00 00 00 01`) and, in
+      its status packets, sets `Mh` (`0x9F`) to the taker's device number.
+   3. The taker asserts `mm=1` (`0x9E`) + flag bit 5 in its status.
+   4. The old master drops `mm`, sets `Mh` back to `0xFF`, and bumps `Syncn`
+      past all peers.
+
+   Steps 2-4 are exactly the dance captured in `docs/local/handoff-dance.txt`.
+   Implementation TODO: `build_master_handoff_request()` (`0x26`) and response
+   handling; **track the current master's source IP** (the recv path drops it
+   today) to unicast the request; then run the assertion dance already built.
+   Exact byte offsets for `D` to be confirmed against a reference impl
+   (prolink-connect / python-prodj-link). **Testable on an ordinary switch — no
+   hub/mirror needed**, since the box sends the request and reads the broadcast
+   status result.
 
 5. **Front-panel Master mode** — a toggle that makes the box the tempo
    authority, using the existing free-run / manual-BPM tempo as its grid.
