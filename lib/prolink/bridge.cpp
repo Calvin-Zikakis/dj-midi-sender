@@ -38,6 +38,8 @@ Bridge::Bridge(IUdpSocket& beat_sock,
     , cfg_(std::move(cfg))
     , cb_(std::move(cb)) {
     last_known_bpm_.store(cfg_.fallback_bpm);
+    active_device_num_.store(cfg_.device_num);
+    force_master_device_.store(cfg_.force_master_device);
 }
 
 void Bridge::set_clock_offset_ms(float ms) {
@@ -63,12 +65,13 @@ void Bridge::reset_grid_offset() {
 }
 
 void Bridge::set_force_master_device(uint8_t device_num) {
+    // Atomic: called from the UI thread, read by the bridge thread per packet.
     // Mirrors cfg.force_master_device but settable live (front-panel
     // encoder). Storing current_master_ here makes the change take effect
     // immediately: device_num==0 re-bootstraps auto-tracking from the next
     // packet, non-zero pins to that device. The per-packet master logic
     // re-reads cfg_.force_master_device, so a cross-task byte write is fine.
-    cfg_.force_master_device = device_num;
+    force_master_device_.store(device_num);
     current_master_.store(device_num);
 }
 
@@ -97,13 +100,22 @@ void Bridge::request_resync(bool immediate) {
 }
 
 void Bridge::set_master_mode(bool on) {
-    if (on) {
-        master_mode_.store(true);
-        // Continue the master's bar rather than restarting it: on_master_beat
-        // increments before sending, so seeding with the last beat we saw makes
-        // our first broadcast beat the deck's next one. Keeps the takeover
-        // bar-transparent for everything syncing to us.
-        master_beat_in_bar_    = last_deck_beat_in_bar_.load();
+    // Called from the UI thread. Everything this implies — restarting the
+    // device claim, arming request bursts and release deadlines, seeding the
+    // bar counter — is state the run loop owns, so publish intent and let the
+    // bridge thread apply it (same pattern as request_resync). Entering is
+    // reflected immediately so the panel can show it; leaving is cleared by the
+    // run loop once the handoff completes.
+    if (on) master_mode_.store(true);
+    master_mode_request_.store(on ? 1 : 2);
+}
+
+void Bridge::apply_master_mode_request() {
+    const uint8_t req = master_mode_request_.exchange(0);
+    if (req == 0) return;
+
+    if (req == 1) {
+        master_beat_pos_.store(last_deck_beat_in_bar_.load());
         last_master_status_ms_ = 0;
         master_confirmed_.store(false);
         // Cancel any release still in flight. Without this, re-selecting master
@@ -114,8 +126,7 @@ void Bridge::set_master_mode(bool on) {
         // Claim a player slot for the duration — only those can hold master.
         restart_device_claim(cfg_.master_device_num);
         // Remember how we were running so releasing master restores it rather
-        // than always reverting to "follow a deck" (which would silently undo a
-        // standalone selection).
+        // than always reverting to "follow a deck".
         pre_master_ignore_ = ignore_master_.load();
         // Take over at the tempo we were already following, so grabbing master
         // mid-set doesn't lurch the music. The DJ nudges from there.
@@ -137,11 +148,13 @@ void Bridge::set_master_mode(bool on) {
     // handle_status_packet; release_deadline_ms_ is the fallback if it doesn't.
     const uint8_t  target = current_master_.load();
     const uint32_t tip    = master_ip_.load();
-    if (master_confirmed_.load() && target != 0 && target != cfg_.device_num && tip != 0) {
+    if (master_confirmed_.load() && target != 0 &&
+        target != active_device_num_.load() && tip != 0) {
         yielding_to_.store(target);
         uint8_t cmd[64];
         size_t cn = build_sync_control_packet(cmd, sizeof(cmd), cfg_.device_name,
-                                              cfg_.device_num, SYNC_CMD_BECOME_MASTER);
+                                              active_device_num_.load(),
+                                              SYNC_CMD_BECOME_MASTER);
         bool ok = cn && beat_sock_.send(cmd, cn, tip, PORT_BEAT);
         release_deadline_ms_ = now_ms() + 3000;
         char m[96];
@@ -161,18 +174,20 @@ void Bridge::set_master_mode(bool on) {
 
 void Bridge::on_master_beat() {
     if (!master_mode_.load()) return;
-    master_beat_in_bar_ = static_cast<uint8_t>((master_beat_in_bar_ % 4) + 1);
-    master_beat_pos_.store(master_beat_in_bar_);   // for the front panel
+    // Runs in the clock's tick callback, i.e. a different thread from the run
+    // loop — touch only atomics here.
+    const uint8_t beat = static_cast<uint8_t>((master_beat_pos_.load() % 4) + 1);
+    master_beat_pos_.store(beat);
     const float bpm = last_known_bpm_.load();
     if (!(bpm > 0.0f)) return;
     uint8_t pkt[128];
     size_t n = build_beat_packet(pkt, sizeof(pkt), cfg_.device_name,
-                                 cfg_.device_num, bpm, master_beat_in_bar_);
+                                 active_device_num_.load(), bpm, beat);
     if (n) beat_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_BEAT);
 }
 
 void Bridge::handle_master_yield_request(uint8_t requester, uint32_t requester_ip) {
-    if (requester == 0 || requester == cfg_.device_num) return;
+    if (requester == 0 || requester == active_device_num_.load()) return;
     if (yielding_to_.load() == requester) return;   // already yielding to it
 
     // Acknowledge (0x27) unicast on the STATUS port, and start advertising the
@@ -181,7 +196,8 @@ void Bridge::handle_master_yield_request(uint8_t requester, uint32_t requester_i
     yielding_to_.store(requester);
     uint8_t ack[64];
     size_t an = build_master_handoff_response(ack, sizeof(ack),
-                                              cfg_.device_name, cfg_.device_num);
+                                              cfg_.device_name,
+                                              active_device_num_.load());
     bool ok = an && status_sock_.send(ack, an, requester_ip, PORT_STATUS);
     char m[96];
     std::snprintf(m, sizeof(m), "yield request from device %u — ACK 0x27 %s",
@@ -222,21 +238,24 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
             --master_request_countdown_;
             uint8_t req[64];
             size_t rn = build_master_handoff_request(req, sizeof(req),
-                                                     cfg_.device_name, cfg_.device_num);
+                                                     cfg_.device_name,
+                                                     active_device_num_.load());
             if (rn) {
                 bool ok = beat_sock_.send(req, rn, mip, PORT_BEAT);
                 char m[96];
                 std::snprintf(m, sizeof(m),
                     "handoff 0x26 -> %u.%u.%u.%u:%u dev=%u %s (%d left)",
                     (mip >> 24) & 0xFF, (mip >> 16) & 0xFF, (mip >> 8) & 0xFF, mip & 0xFF,
-                    PORT_BEAT, cfg_.device_num, ok ? "ok" : "FAIL", master_request_countdown_);
+                    PORT_BEAT, active_device_num_.load(), ok ? "ok" : "FAIL",
+                    master_request_countdown_);
                 log(m);
             }
         } else {
             log("master mode: waiting to learn the current master's IP");
         }
     }
-    const uint8_t  beat  = master_beat_in_bar_ ? master_beat_in_bar_ : 1;
+    const uint8_t  pos   = master_beat_pos_.load();
+    const uint8_t  beat  = pos ? pos : 1;
     const uint32_t syncn = max_syncn_seen_.load() + 1;   // outrank the peers
     // Only claim master (mm=1) once the current master has yielded; until then
     // we broadcast as a normal synced follower and keep sending 0x26 requests.
@@ -244,8 +263,8 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
     const uint8_t mh = yielding_to_.load() ? yielding_to_.load() : 0xFF;
     uint8_t pkt[320];
     size_t n = build_status_packet(pkt, sizeof(pkt), cfg_.device_name,
-                                   cfg_.device_num, bpm, beat, assert_master,
-                                   syncn, mh);
+                                   active_device_num_.load(), bpm, beat,
+                                   assert_master, syncn, mh);
     if (n) status_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_STATUS);
 }
 
@@ -320,6 +339,7 @@ void Bridge::run() {
         }
 
         uint64_t t = now_ms();
+        apply_master_mode_request();
         step_device_claim(t);
         maybe_send_keepalive(t);
         maybe_stop_on_silence(t);
@@ -359,9 +379,9 @@ void Bridge::handle_beat_packet(const uint8_t* buf, size_t len) {
     // to that. Otherwise (auto mode): with only one device on the link,
     // the first beat we see is the master. Status packets will overwrite
     // this once they start flowing.
-    if (cfg_.force_master_device != 0) {
-        if (current_master_.load() != cfg_.force_master_device) {
-            current_master_.store(cfg_.force_master_device);
+    if (force_master_device_.load() != 0) {
+        if (current_master_.load() != force_master_device_.load()) {
+            current_master_.store(force_master_device_.load());
         }
     } else if (current_master_.load() == 0) {
         current_master_.store(parsed->device_num);
@@ -506,20 +526,20 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     if (cb_.on_status_raw) cb_.on_status_raw(buf, len);
     // Track the highest master-generation counter any peer reports, so a master
     // takeover can announce Syncn = max+1 (required for CDJs to yield master).
-    if (parsed->device_num != cfg_.device_num &&
+    if (parsed->device_num != active_device_num_.load() &&
         parsed->syncn > max_syncn_seen_.load()) {
         max_syncn_seen_.store(parsed->syncn);
     }
     // Never process our own broadcast status (we may receive our own broadcast):
     // it must not make us track ourselves as master or as the handoff target.
-    if (parsed->device_num == cfg_.device_num) return;
+    if (parsed->device_num == active_device_num_.load()) return;
     uint64_t t = now_ms();
     last_packet_ms_ = t;
     last_status_ms_ = t;
     status_count_.fetch_add(1, std::memory_order_relaxed);
 
     // Master tracking. Three cases:
-    //   (0) Pinned — cfg_.force_master_device != 0. Always follow the named
+    //   (0) Pinned — force_master_device_.load() != 0. Always follow the named
     //       device; ignore is_master entirely. Useful when you want the box
     //       to follow deck 1 specifically regardless of who has the master
     //       button lit.
@@ -532,14 +552,14 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     //       (we just started up, or no deck has claimed the flag), latch
     //       onto the first status-sending device. A real master claim will
     //       supersede this on the next packet that has is_master set.
-    if (cfg_.force_master_device != 0) {
-        if (current_master_.load() != cfg_.force_master_device) {
-            current_master_.store(cfg_.force_master_device);
+    if (force_master_device_.load() != 0) {
+        if (current_master_.load() != force_master_device_.load()) {
+            current_master_.store(force_master_device_.load());
             if (cfg_.verbose) {
                 char msg[128];
                 std::snprintf(msg, sizeof(msg),
                               "master pinned to device %u (--follow-device)",
-                              cfg_.force_master_device);
+                              force_master_device_.load());
                 log(msg);
             }
         }
@@ -579,7 +599,7 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
     // Handoff acknowledgement: the current master sets its Mh to our device
     // number when it yields to us. Only then may we assert mm=1.
     if (master_mode_.load() && !master_confirmed_.load() &&
-        parsed->master_handoff == cfg_.device_num) {
+        parsed->master_handoff == active_device_num_.load()) {
         master_confirmed_.store(true);
         max_syncn_seen_.store(parsed->syncn);   // our Syncn will be this + 1
         if (cfg_.verbose) log("master yielded to us — asserting mm=1");
@@ -626,9 +646,12 @@ void Bridge::handle_status_packet(const uint8_t* buf, size_t len) {
 }
 
 void Bridge::restart_device_claim(uint8_t device_num, bool fast) {
-    if (idle_device_num_ == 0) idle_device_num_ = cfg_.device_num;  // remember home
-    if (cfg_.device_num == device_num) return;
-    cfg_.device_num     = device_num;
+    // Bridge-thread only. active_device_num_ is the single source of truth for
+    // the number we are currently presenting on the link; cfg_.device_num stays
+    // the configured idle number.
+    if (idle_device_num_ == 0) idle_device_num_ = active_device_num_.load();
+    if (active_device_num_.load() == device_num) return;
+    active_device_num_.store(device_num);
     claim_step_         = 0;
     last_claim_ms_      = 0;
     claim_done_         = false;
@@ -657,11 +680,11 @@ void Bridge::step_device_claim(uint64_t t) {
         n = build_claim_stage1(pkt, sizeof(pkt), cfg_.device_name, cfg_.mac, i);
     } else if (stage == 2) {
         n = build_claim_stage2(pkt, sizeof(pkt), cfg_.device_name, cfg_.mac,
-                               cfg_.local_ip, cfg_.device_num, i,
+                               cfg_.local_ip, active_device_num_.load(), i,
                                /*auto_assign*/ false);
     } else {
         n = build_claim_stage3(pkt, sizeof(pkt), cfg_.device_name,
-                               cfg_.device_num, i);
+                               active_device_num_.load(), i);
     }
     if (n) keepalive_sock_.send(pkt, n, cfg_.broadcast_ip, PORT_KEEPALIVE);
 
@@ -669,7 +692,7 @@ void Bridge::step_device_claim(uint64_t t) {
         claim_done_ = true;
         char m[80];
         std::snprintf(m, sizeof(m), "device-number claim complete for device %u",
-                      cfg_.device_num);
+                      active_device_num_.load());
         log(m);
     }
 }
@@ -683,7 +706,7 @@ void Bridge::maybe_send_keepalive(uint64_t t) {
     uint8_t pkt[64];
     size_t n = build_keepalive_packet(pkt, sizeof(pkt),
                                       cfg_.device_name,
-                                      cfg_.device_num,
+                                      active_device_num_.load(),
                                       cfg_.mac,
                                       cfg_.local_ip);
     if (n == 0) return;
@@ -697,7 +720,7 @@ void Bridge::maybe_send_keepalive(uint64_t t) {
                       (cfg_.broadcast_ip >>  8) & 0xFF,
                        cfg_.broadcast_ip        & 0xFF,
                       PORT_KEEPALIVE,
-                      cfg_.device_num,
+                      active_device_num_.load(),
                       ok ? "ok" : "FAILED");
         log(msg);
     }

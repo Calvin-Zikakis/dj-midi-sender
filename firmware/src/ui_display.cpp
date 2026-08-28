@@ -32,13 +32,26 @@ void ui_display_begin() {
 
 const char* ui_source_label(uint8_t src) {
     switch (src) {
-        case 0:  return "auto";   // follow whichever deck holds the master flag
+        case 0:  return "folw";   // follower master: track whoever holds master
         case 1:  return "P1";
         case 2:  return "P2";
         case 3:  return "P3";
         case 4:  return "P4";
-        case 5:  return "mstr";   // the BOX is the tempo master
+        case 5:  return "sync";   // sync master: the box holds the role
         case 6:  return "off";    // ignore players — standalone tempo
+        default: return "?";
+    }
+}
+
+const char* ui_source_label_long(uint8_t src) {
+    switch (src) {
+        case 0:  return "follower master";
+        case 1:  return "player 1";
+        case 2:  return "player 2";
+        case 3:  return "player 3";
+        case 4:  return "player 4";
+        case 5:  return "sync master";
+        case 6:  return "off (standalone)";
         default: return "?";
     }
 }
@@ -48,15 +61,17 @@ namespace {
 // Source-select overlay: list mstr / P1..P4 with a ">" cursor on the proposed
 // option and "(on)" on the currently-active one. Push confirms, tap cancels.
 void render_source_select(U8G2& oled, const UiSnapshot& s) {
-    char buf[24];
+    char buf[32];
     oled.setFont(u8g2_font_5x8_tr);
     oled.drawStr(0, 7, "CLOCK SOURCE");
-    for (uint8_t i = 0; i < kSourceCount; ++i) {
-        const int y = 14 + i * 7;  // 7 entries: 14..56, clear of the footer
+    const uint8_t n = source_count(s.act_as_player);
+    for (uint8_t i = 0; i < n; ++i) {
+        const uint8_t src = source_at(i, s.act_as_player);
+        const int y = 14 + i * 7;  // up to 7 entries: 14..56, clear of the footer
         snprintf(buf, sizeof buf, "%s %s%s",
-                 (i == s.proposed_src) ? ">" : " ",
-                 ui_source_label(i),
-                 (i == s.selected_src) ? " (on)" : "");
+                 (src == s.proposed_src) ? ">" : " ",
+                 ui_source_label_long(src),
+                 (src == s.selected_src) ? " (on)" : "");
         oled.drawStr(0, y, buf);
     }
     oled.drawStr(0, 63, "push set   tap back");
@@ -72,24 +87,21 @@ void render_menu(U8G2& oled, const UiSnapshot& s) {
     oled.drawStr(0, 8, "SETTINGS");
 
     for (uint8_t i = 0; i < kMenuItemCount; ++i) {
-        const int   y   = 18 + i * 11;  // 18, 29, 40, 51
+        const int   y   = 18 + i * 13;  // 18, 31, 44
         const bool  sel = (i == s.menu_index);
         const bool  ed  = editing && sel;
         const char* op  = ed ? "[" : "";
         const char* cl  = ed ? "]" : "";
         const char* mk  = sel ? ">" : " ";
 
-        if (i == kMenuItemMode) {
-            const bool free_val = ed ? (s.menu_edit != 0) : s.free_run;
-            snprintf(buf, sizeof buf, "%s Mode: %s%s%s", mk, op, free_val ? "Free" : "Sync", cl);
+        if (i == kMenuItemActAsPlayer) {
+            const bool on = ed ? (s.menu_edit != 0) : s.act_as_player;
+            snprintf(buf, sizeof buf, "%s Act as player: %s%s%s",
+                     mk, op, on ? "yes" : "no", cl);
         } else if (i == kMenuItemBpmStep) {
             const uint8_t idx = ed ? static_cast<uint8_t>(s.menu_edit) : s.bpm_step_idx;
-            const double  v   = (idx < kBpmStepCount) ? kBpmStepValues[idx] : 1.0;
+            const double  v   = (idx < kBpmStepCount) ? kBpmStepValues[idx] : 0.1;
             snprintf(buf, sizeof buf, "%s BPM step: %s%g%s", mk, op, v, cl);
-        } else if (i == kMenuItemFineStep) {
-            const uint8_t idx = ed ? static_cast<uint8_t>(s.menu_edit) : s.fine_step_idx;
-            const double  v   = (idx < kFineStepCount) ? kFineStepValues[idx] : 0.1;
-            snprintf(buf, sizeof buf, "%s Fine step: %s%g%s", mk, op, v, cl);
         } else {  // kMenuItemOffsetStep
             const uint8_t idx = ed ? static_cast<uint8_t>(s.menu_edit) : s.offset_step_idx;
             const double  v   = (idx < kOffsetStepCount) ? kOffsetStepValues[idx] : 1.0;
@@ -140,14 +152,12 @@ void ui_display_render(const UiSnapshot& s) {
     }
     g_oled.setFont(u8g2_font_6x12_tr);
     g_oled.drawStr(58, 34, s.playing ? "PLAY" : "STOP");
-    // Mode tag: RSYNC flashes briefly right after a re-sync tap; otherwise
-    // OFF = standalone; else FREE (MAN while manual-latched) / SYNC.
-    const char* mode_tag = s.resync_flash ? "RSYN"
-                         : s.is_master     ? "MSTR"   // we hold the master role
-                         : s.master_wanted ? "REQ "   // handshake in flight
-                         : s.ignore_master ? "OFF "
-                         : s.free_run       ? (s.manual_bpm ? "MAN " : "FREE")
-                                            : "SYNC";
+    // Tag slot shows only what the `src` line does NOT already say: transient
+    // confirmations and in-flight state. (`MSTR`/`OFF` used to live here and
+    // merely repeated the source.)
+    const char* mode_tag = s.resync_flash                  ? "RSYN"  // just re-synced
+                         : (s.master_wanted && !s.is_master) ? "REQ "  // handshake running
+                                                             : "    ";
     g_oled.drawStr(96, 34, mode_tag);
 
     // ── Source select + active master ──────────────────────────────────

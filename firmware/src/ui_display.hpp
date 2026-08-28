@@ -20,24 +20,16 @@ enum class UiMode : uint8_t {
 
 // Settings-menu items.
 enum MenuItem : uint8_t {
-    kMenuItemMode = 0,    // Sync / Free
-    kMenuItemBpmStep,     // BPM per detent for hold-tap + spin (follower sources,
-                          //   Free mode only)
-    kMenuItemFineStep,    // BPM per detent for plain spin when the BOX owns the
-                          //   tempo (off / mstr sources)
-    kMenuItemOffsetStep,  // offset-button step per press
+    kMenuItemActAsPlayer = 0, // join the link as a player (unlocks sync master)
+    kMenuItemBpmStep,         // BPM per detent when the BOX owns the tempo
+    kMenuItemOffsetStep,      // offset-button step per press
     kMenuItemCount,
 };
 
-// Coarse BPM step: hold-tap + spin while following a deck in Free mode.
-inline constexpr float   kBpmStepValues[] = {0.1f, 0.5f, 1.0f, 5.0f};
+// BPM step: encoder detent size when the box owns the tempo (mstr / off).
+inline constexpr float   kBpmStepValues[] = {0.1f, 0.25f, 0.5f, 1.0f};
 inline constexpr uint8_t kBpmStepCount    = 4;
-inline constexpr uint8_t kBpmStepDefault  = 2;  // index of 1.0 BPM
-
-// Fine BPM step: plain spin when the box owns the tempo (off / mstr).
-inline constexpr float   kFineStepValues[] = {0.1f, 0.25f, 0.5f, 1.0f};
-inline constexpr uint8_t kFineStepCount    = 4;
-inline constexpr uint8_t kFineStepDefault  = 0;  // 0.1 BPM
+inline constexpr uint8_t kBpmStepDefault  = 0;  // 0.1 BPM
 
 // Offset-button step options (ms per nudge press).
 inline constexpr float   kOffsetStepValues[] = {0.1f, 0.5f, 1.0f};
@@ -45,23 +37,36 @@ inline constexpr uint8_t kOffsetStepCount    = 3;
 inline constexpr uint8_t kOffsetStepDefault  = 2;  // index of 1.0 ms
 
 // Clock sources — "what drives the clock":
-//   0      = auto  : follow whichever deck holds the DJ-Link master role
-//   1..4   = P1..P4: pin to that deck
-//   5      = mstr  : the BOX is the tempo master (claims the role; decks follow)
-//   6      = off   : standalone manual tempo, link ignored
+//   0      = follower master : follow whichever deck holds the DJ-Link master role
+//   1..4   = player 1..4     : pin to that deck
+//   5      = sync master     : the BOX claims the master role; decks sync to it
+//   6      = off             : standalone manual tempo, link ignored
 inline constexpr uint8_t kSourceCount  = 7;
 inline constexpr uint8_t kSourceMaster = 5;
 inline constexpr uint8_t kSourceOff    = 6;
 
-// Clock-source label (see above).
+// `sync master` is hidden unless "Act as player" is on, so a stray spin can
+// never hijack the master role mid-set. Claiming the role also means claiming
+// a player slot on the link, which is exactly what that setting authorises.
+inline constexpr uint8_t source_count(bool act_as_player) {
+    return act_as_player ? kSourceCount : kSourceCount - 1;
+}
+// Map a cursor index to a source id, skipping `sync master` when it is hidden.
+inline constexpr uint8_t source_at(uint8_t index, bool act_as_player) {
+    return (!act_as_player && index >= kSourceMaster)
+               ? static_cast<uint8_t>(index + 1)   // jump over sync master
+               : index;
+}
+
+// Short clock-source label for the status line (<= 4 chars, fits beside `src`).
 const char* ui_source_label(uint8_t src);
+// Full label for the source-select list, where there is room to spell it out.
+const char* ui_source_label_long(uint8_t src);
 
 struct UiSnapshot {
     bool        link_up       = false;
     bool        playing       = false;
     bool        clock_running = false;
-    bool        free_run      = false;
-    bool        manual_bpm    = false;  // manual tempo latched (Free mode)
     bool        ignore_master = false;  // "Off" source — standalone tempo
     float       bpm           = 0.0f;
     float       pitch_pct     = 0.0f;
@@ -79,8 +84,8 @@ struct UiSnapshot {
     uint8_t     proposed_src  = 0;     // source-select cursor (kSourceSelect only)
     uint8_t     menu_index    = 0;     // highlighted item (kMenu / kMenuEdit)
     int32_t     menu_edit     = 0;     // working value while editing
+    bool        act_as_player = false;  // link presence: unlocks sync master
     uint8_t     bpm_step_idx  = 0;     // index into kBpmStepValues
-    uint8_t     fine_step_idx = 0;     // index into kFineStepValues
     uint8_t     offset_step_idx = 0;   // index into kOffsetStepValues
 };
 

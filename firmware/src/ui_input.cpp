@@ -81,9 +81,9 @@ constexpr uint16_t kRepeatStartMs = 160;  // first repeat interval
 constexpr uint16_t kRepeatMinMs   = 35;   // fastest interval (full speed)
 constexpr uint16_t kRepeatAccelMs = 18;   // interval shrink per repeat
 
-// Both nudge buttons held together = free-run toggle (one-shot per hold).
+// Both nudge buttons held together = open the settings menu (one-shot per hold).
 constexpr uint32_t kComboHoldMs = 1000;
-std::atomic<uint32_t> g_freerun_toggles{0};
+std::atomic<uint32_t> g_menu_holds{0};
 uint32_t g_combo_start_ms = 0;
 bool     g_combo_fired    = false;
 
@@ -107,13 +107,13 @@ void poll_nudge(uint32_t now_ms) {
 
     const bool both_held = !g_nudge[0].stable && !g_nudge[1].stable;
 
-    // 2) Both held → free-run toggle. Fires once when the hold passes the
-    //    threshold; resets when either is released.
+    // 2) Both held → open the settings menu. Fires once when the hold passes
+    //    the threshold; resets when either is released.
     if (both_held) {
         if (g_combo_start_ms == 0) g_combo_start_ms = now_ms;
         if (!g_combo_fired && (now_ms - g_combo_start_ms) >= kComboHoldMs) {
             g_combo_fired = true;
-            g_freerun_toggles.fetch_add(1, std::memory_order_relaxed);
+            g_menu_holds.fetch_add(1, std::memory_order_relaxed);
         }
     } else {
         g_combo_start_ms = 0;
@@ -223,8 +223,8 @@ int32_t ui_input_take_nudge_steps() {
     return g_nudge_steps.exchange(0, std::memory_order_relaxed);
 }
 
-uint32_t ui_input_take_freerun_toggles() {
-    return g_freerun_toggles.exchange(0, std::memory_order_relaxed);
+uint32_t ui_input_take_menu_holds() {
+    return g_menu_holds.exchange(0, std::memory_order_relaxed);
 }
 
 bool ui_input_tap_held() {
