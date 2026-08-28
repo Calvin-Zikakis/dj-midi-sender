@@ -162,6 +162,10 @@ public:
     // True only once the handoff completed and we actually hold the role;
     // master_mode() is true from the moment it is requested.
     bool is_tempo_master() const { return master_confirmed_.load(); }
+    // Our own bar position (1..4) while acting as master. The Clock's
+    // beat_in_bar only tracks incoming deck beats, which we deliberately ignore
+    // when we are the authority — so the UI reads this instead.
+    uint8_t master_beat_in_bar() const { return master_beat_pos_.load(); }
     // Called once per beat from the clock (Clock::set_on_beat) to emit a beat
     // packet advertising our grid. No-op unless master mode is on.
     void on_master_beat();
@@ -220,6 +224,7 @@ private:
     // Tempo-master mode broadcasting.
     std::atomic<bool>     master_mode_{false};
     uint8_t               master_beat_in_bar_ = 0;   // 0 = not started; 1..4
+    std::atomic<uint8_t>  master_beat_pos_{0};       // same, readable by the UI
     uint64_t              last_master_status_ms_ = 0;
     std::atomic<uint32_t> max_syncn_seen_{0};        // highest Syncn from peers
     int                   master_request_countdown_ = 0;  // takeover requests left to send

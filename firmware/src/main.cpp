@@ -630,7 +630,12 @@ void ui_task(void*) {
 #endif
 
         if (ui_mode == firmware::UiMode::kNormal) {
-            const bool  off_mode  = (g_selected_src.load() == firmware::kSourceOff);
+            // Sources where the BOX owns the tempo: standalone, and tempo-master
+            // (as master we drive the decks, so the encoder sets our BPM and tap
+            // is tap-tempo rather than a re-sync that would mean nothing).
+            const uint8_t cur_src = g_selected_src.load();
+            const bool  off_mode  = (cur_src == firmware::kSourceOff ||
+                                     cur_src == firmware::kSourceMaster);
             const float bpm_step  = static_cast<float>(firmware::kBpmStepValues[bpm_step_idx]);
             const float fine_step = static_cast<float>(firmware::kFineStepValues[fine_step_idx]);
 
@@ -816,7 +821,8 @@ void ui_task(void*) {
             s.clock_running = c->is_running();
             s.bpm           = c->current_bpm();
             s.master_dev    = b->current_master_num();
-            s.beat_in_bar   = c->current_beat_in_bar();
+            s.beat_in_bar   = b->master_mode() ? b->master_beat_in_bar()
+                                              : c->current_beat_in_bar();
             s.offset_ms     = b->total_offset_ms();
             s.phase_err_us  = c->current_phase_error_us();
         }
