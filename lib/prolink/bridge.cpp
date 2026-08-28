@@ -68,13 +68,14 @@ void Bridge::reset_grid_offset() {
 
 void Bridge::set_force_master_device(uint8_t device_num) {
     // Atomic: called from the UI thread, read by the bridge thread per packet.
-    // Mirrors cfg.force_master_device but settable live (front-panel
-    // encoder). Storing current_master_ here makes the change take effect
-    // immediately: device_num==0 re-bootstraps auto-tracking from the next
-    // packet, non-zero pins to that device. The per-packet master logic
-    // re-reads cfg_.force_master_device, so a cross-task byte write is fine.
     force_master_device_.store(device_num);
-    current_master_.store(device_num);
+    // Pinning takes effect immediately. Switching back to auto (0) must NOT
+    // clear current_master_: that forces a re-bootstrap, which latches onto
+    // whichever deck's status arrives first — often an idle one with no track
+    // loaded, so no valid tempo — and only corrects when the real master's
+    // flag comes round. Keeping the last known master means auto-tracking
+    // continues from something sensible and the master flag moves it as usual.
+    if (device_num != 0) current_master_.store(device_num);
 }
 
 void Bridge::set_manual_bpm(float bpm) {
@@ -189,6 +190,11 @@ void Bridge::leave_master_mode_() {
     master_applied_ = false;
     restart_device_claim(idle_device_num_);   // give the player slot back
     set_ignore_master(pre_master_ignore_.load());
+    // Reseed the tempo smoother. It still holds whatever we were following
+    // before taking the role, so without this the first deck tempo after a
+    // release converges over several packets instead of landing at once —
+    // audible as the box lagging behind the deck for seconds.
+    smoothed_bpm_ = 0.0f;
 }
 
 void Bridge::on_master_beat() {

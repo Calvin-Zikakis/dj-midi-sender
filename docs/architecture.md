@@ -523,6 +523,22 @@ required. The flag is the protocol's "this is the tempo authority"
 designation and transfers between decks independently of play state, so a
 paused master is still the deck to track.
 
+Two subtleties, both learned on hardware:
+
+- **Bootstrap is a last resort.** The `current_master_ == 0` branch latches
+  onto whichever device's status arrives first, which on a real link is often
+  an idle deck with no track loaded — no valid BPM, so the box has no tempo
+  until the real master's flag next comes round. Only enter that state at
+  startup. In particular, selecting `follower master` (auto) must clear the
+  pin *without* clearing `current_master_`: keep following the last known
+  master and let the flag move it. Resetting it made the box sit tempo-less
+  for several seconds every time it handed the role back to a deck.
+- **A role change invalidates the smoothed tempo.** The EMA smoother that
+  filters pitch-fader movement still holds whatever the box was following
+  before it took master. Reseed it when stepping down, or the first deck
+  tempo after a release is approached over several packets instead of landing
+  at once.
+
 When only the XDJ-XZ is on the network, all packets come from device 1
 and it is always master. This logic also handles future multi-deck setups
 without changes — master handoff happens by the flag flipping between two
