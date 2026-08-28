@@ -1,5 +1,7 @@
 # dj-midi-sender
 
+[![CI](https://github.com/Calvin-Zikakis/dj-midi-sender/actions/workflows/ci.yml/badge.svg)](https://github.com/Calvin-Zikakis/dj-midi-sender/actions/workflows/ci.yml)
+
 Standalone bridge that turns a Pioneer XDJ-XZ's Pro DJ Link Ethernet broadcast
 into rock-solid MIDI clock with continuous tempo tracking. The hardware is an
 **ESP32-S3 + W5500** box with both a **USB MIDI host jack** and a **5-pin DIN
