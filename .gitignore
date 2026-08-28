@@ -63,3 +63,4 @@ imgui.ini
 *.pcap
 *.pcapng
 !captures/*.pcapng
+build-tsan/
