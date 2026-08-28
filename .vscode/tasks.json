@@ -5,49 +5,104 @@
             "label": "fw: build (production)",
             "type": "shell",
             "command": "pio run -e waveshare_esp32s3_eth",
-            "options": { "cwd": "${workspaceFolder}/firmware" },
+            "options": {
+                "cwd": "${workspaceFolder}/firmware"
+            },
             "group": "build",
-            "presentation": { "reveal": "always", "panel": "shared" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": "$gcc"
         },
         {
             "label": "fw: flash — production (USB host mode)",
             "type": "shell",
             "command": "pio run -e waveshare_esp32s3_eth -t upload",
-            "options": { "cwd": "${workspaceFolder}/firmware" },
-            "presentation": { "reveal": "always", "panel": "shared" },
+            "options": {
+                "cwd": "${workspaceFolder}/firmware"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": []
         },
         {
             "label": "fw: flash — diag (serial stays alive)",
             "type": "shell",
             "command": "pio run -e diag -t upload",
-            "options": { "cwd": "${workspaceFolder}/firmware" },
-            "presentation": { "reveal": "always", "panel": "shared" },
+            "options": {
+                "cwd": "${workspaceFolder}/firmware"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": []
         },
         {
             "label": "fw: monitor — diag serial (115200)",
             "type": "shell",
             "command": "pio device monitor -e diag",
-            "options": { "cwd": "${workspaceFolder}/firmware" },
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "options": {
+                "cwd": "${workspaceFolder}/firmware"
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
             "label": "build",
             "type": "shell",
             "command": "cmake --build build",
-            "group": { "kind": "build", "isDefault": true },
-            "presentation": { "reveal": "always", "panel": "shared" },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": "$gcc"
+        },
+        {
+            "label": "test: run unit tests",
+            "type": "shell",
+            "command": "cmake --build build --target xdj_tests && ./build/tests/xdj_tests",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "test: sanitizers (thread)",
+            "type": "shell",
+            "command": "cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DXDJ_DESKTOP=OFF -DCMAKE_CXX_FLAGS='-fsanitize=thread -g' -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread' && cmake --build build-tsan --target xdj_tests && ./build-tsan/tests/xdj_tests",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            },
+            "problemMatcher": []
         },
         {
             "label": "run: bridge — live verbose + GUI",
             "type": "shell",
             "command": "./build/desktop/xdj_bridge --midi-port 'OP-XY' --visualize --verbose",
             "dependsOn": "build",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
@@ -55,7 +110,11 @@
             "type": "shell",
             "command": "./build/desktop/xdj_bridge --midi-port 'OP-XY' --verbose",
             "dependsOn": "build",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
@@ -63,14 +122,22 @@
             "type": "shell",
             "command": "./build/desktop/xdj_bridge --midi-port 'OP-XY' --no-vcdj --verbose",
             "dependsOn": "build",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
             "label": "run: bridge — replay offline",
             "type": "shell",
             "command": "./build/desktop/xdj_bridge --bind 127.0.0.1 --midi-port 'OP-XY' --no-vcdj --verbose",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
@@ -78,35 +145,55 @@
             "type": "shell",
             "command": "./build/desktop/xdj_clockmon --port 'Scarlett'",
             "dependsOn": "build",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
             "label": "run: replay — pitch sweep (loop)",
             "type": "shell",
             "command": "./build/desktop/xdj_replay --file captures/xdj-xz-export-mode-pitch-sweep.pcapng --loop",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
             "label": "run: replay — steady 132 BPM (loop)",
             "type": "shell",
             "command": "./build/desktop/xdj_replay --file captures/xdj-xz-export-mode.pcapng --loop",
-            "presentation": { "reveal": "always", "panel": "new", "focus": true },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": true
+            },
             "problemMatcher": []
         },
         {
             "label": "tcpdump: watch port 50002 (status packets)",
             "type": "shell",
             "command": "sudo tcpdump -i any -n -l udp port 50002",
-            "presentation": { "reveal": "always", "panel": "new", "focus": false },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": false
+            },
             "problemMatcher": []
         },
         {
             "label": "tcpdump: watch port 50000 (keepalive)",
             "type": "shell",
             "command": "sudo tcpdump -i any -n -l udp port 50000",
-            "presentation": { "reveal": "always", "panel": "new", "focus": false },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "focus": false
+            },
             "problemMatcher": []
         }
     ]
