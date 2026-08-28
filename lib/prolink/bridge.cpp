@@ -154,6 +154,7 @@ void Bridge::set_master_mode(bool on) {
 void Bridge::on_master_beat() {
     if (!master_mode_.load()) return;
     master_beat_in_bar_ = static_cast<uint8_t>((master_beat_in_bar_ % 4) + 1);
+    master_beat_pos_.store(master_beat_in_bar_);   // for the front panel
     const float bpm = last_known_bpm_.load();
     if (!(bpm > 0.0f)) return;
     uint8_t pkt[128];
@@ -204,7 +205,10 @@ void Bridge::maybe_broadcast_master_status(uint64_t t) {
     // current master on port 50001, asking it to yield to us (it replies 0x27
     // and sets its Mh to our device number). Keep asking until it yields
     // (master_confirmed_); needs the master's IP, learned from its status.
-    if (claim_done_ && !master_confirmed_.load() && master_request_countdown_ > 0) {
+    // Not gated on the claim finishing: the request and the claim can run in
+    // parallel, which keeps a mid-set master grab responsive. The burst retries
+    // for several seconds, so an early request that gets ignored is harmless.
+    if (!master_confirmed_.load() && master_request_countdown_ > 0) {
         const uint32_t mip = master_ip_.load();
         if (mip != 0) {
             --master_request_countdown_;
